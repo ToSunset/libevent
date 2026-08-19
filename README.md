@@ -1,3 +1,4 @@
+个人练手项目
 libeventServer‑TcpImageTransfer
 基于 libevent 的跨平台 TCP 图像传输服务，实现服务端图像生成、多客户端接入、心跳保活、断线自动重连功能。服务端最多支持 10 个客户端同时连接，传输 640×480 8bit 灰度图像。
 项目概述
