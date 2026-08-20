@@ -1,19 +1,21 @@
-# Makefile —— libevent 图像客户端（Linux）
+# Makefile - libevent 图像客户端（Linux，C++11）
 # 用法：make       编译
 #       make clean 清理
 
-CC      = gcc
-CFLAGS  = -O2 -Wall -I../common
-LDFLAGS = -levent -levent_pthreads -lpthread
+CC       = gcc
+CXX      = g++
+CFLAGS   = -O2 -Wall -I../common
+CXXFLAGS = -O2 -Wall -std=c++11 -I../common
+LDFLAGS  = -levent -levent_pthreads -lpthread
 
 TARGET = client
-SRC    = client.c
-HDR    = ../common/protocol.h
+SRC    = main.cpp client.cpp preview_window.cpp ../common/logger.cpp
+HDR    = client.h preview_window.h ../common/protocol.h ../common/logger.h
 
 all: $(TARGET)
 
 $(TARGET): $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)

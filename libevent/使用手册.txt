@@ -3,6 +3,22 @@ server和client都可以在win也可以在Ubuntu
 
 
 cd /mnt/hgfs/Share/libevent
+
+
+http://192.168.183.129:8080
+http://127.0.0.1:8080
+
+win
+cd G:\Share\libevent\client\Release
+.\client.exe 192.168.183.129 9995
+
+	  
+s=开始/恢复     q=暂停（冻结图像源）
+o=打开监控      x=关闭监控（隐藏窗口）
+b=开始保存图片  e=停止保存
+h=手动心跳      退出按 Ctrl+C
+
+
 任务：
 给出server端和PC端的代码，要求使用libevent做tcp网络传输图像，并实现短线重连，server支持最多10个客户端连接。
 
@@ -43,7 +59,7 @@ cd /mnt/hgfs/Share/libevent
   client  PC 客户端：心跳 + 收图 + 断线重连
 
 二、构建
-  依赖：VS2019/2022（x64）+ CMake ≥ 3.13 + G:\库\libevent\dev 开发包。
+  依赖：VS2022（x64）+ CMake ≥ 3.13 + G:\库\libevent\dev 开发包。
   若开发包不在默认位置，用 -DLIBEVENT_DEV_DIR=路径 指定。
     cmake -B build -A x64
     cmake --build build --config Release
@@ -58,17 +74,39 @@ client.exe IP 端口    指定服务器地址
   每 30 帧自动保存一帧图像到 frame_XXXX.raw（640*480 裸灰度，307200 字节）。
 
 四、协议速览
-  所有消息以 16 字节 ImgHead_t 开头：flag[4]="CAM0" + ctl_code + err_code + nDataLen。
+  
+现在的控制码是两套通道：client ↔ server 走 TCP 协议码，浏览器 ↔ server 走 HTTP API。浏览器不直接发协议码，它操作 server 本地的图像源；client 才发协议码。
+1. 协议帧（common\protocol.h）
+固定 16 字节头 FrameHeader："CAM0"(4) + ctl控制码(4) + err错误码(4) + len数据长度(4)，本机小端直接 memcpy。
+"头+数据"合并成一次 bufferevent_write，保证一个包完整发出。
+2. 控制码表（Ctl，共 8 个）
+码	方向	含义
+1 HeartbeatReq	client→server	请求心跳
+2 HeartbeatResp	server→client	心跳应答，带 4 字节时间戳
+3 ReqImage	client→server	开始收图
+4 StopImage	client→server	停止收图
+5 ImgData	server→client	图像数据（16 头 + 640×480 灰度）
+6 CtrlDev	client→server	设备控制（未实现，回错误码 4）
+7 PauseSource	client→server	全局冻结图像源
+8 ResumeSource	client→server	恢复图像源
 
-  控制码：
-    1  CTL_HEARTBEAT_REQ   客户端 -> 服务器：请求心跳
-    2  CTL_HEARTBEAT_RESP  服务器 -> 客户端：心跳应答（后带 4 字节数据）
-    3  CTL_REQ_IMAGE       客户端 -> 服务器：开始传输图像
-    4  CTL_STOP_IMAGE      客户端 -> 服务器：停止传输图像
-    5  CTL_IMG_DATA        服务器 -> 客户端：16 字节头 + 640x480 图像数据
-    6  CTL_CTRL_DEV        客户端 -> 服务器：设备控制（当前应答"未支持"）
+错误码 4 个：Ok、ImgTimeout（5 秒没新图）、ServerFull、UnknownCtl。
+3. server 端解析（client_session.cpp 的 onRead）
+循环按 16 字节读头 → 校验 "CAM0" → switch(ctl)：HeartbeatReq → 回 HeartbeatResp + 4 字节毫秒值
+ReqImage → 启动发送线程，等新帧，发"头+数据"
+StopImage → 停发送线程（唤醒 + join）
+PauseSource/ResumeSource → 直接调 ImageSource::pause()/resume()，全局冻结（所有客户端一起冻，恢复从原位置继续）
+未知码 → 回 UnknownCtl
 
-  错误码：0 正常 / 1 图像等待超时 / 2 服务器已满 / 3 未知控制码 / 4 设备控制未实现
+4. client 端状态机（client.cpp）
+三态：WaitHb → Idle → Image。连上先发心跳等应答，通过后进 Idle。
+按键 s → 发 ResumeSource + ReqImage 进收图态；按键 q → 发 StopImage + PauseSource 回 Idle；h 手动心跳；Idle 下每 3 秒自动心跳。
+收图态只认 ImgData，收到别的码直接重连。
+5. 浏览器端（web_server.cpp 的 HTTP 路由，不经协议码）
+/api/start → source_->resume()，/api/stop → source_->pause()（和 client 的 7/8 号码操作同一个东西，所以浏览器暂停时 client 看到的图也会冻结）
+/api/fps → setIntervalMs() 调帧率，/api/heartbeat → 本地计数，/api/stats → 汇总状态，/api/display → 只记录尺寸，/frame → 输出当前帧 PNG
+一句话总结：协议码只管 client↔server 的心跳、收图开关、全局暂停/恢复；浏览器则直接改 server 本地图像源，两者共享同一份"暂停/恢复"状态。
+
 
 五、超时与重连参数（common\protocol.h 中可调）
   图像生成间隔 100ms（10 帧/秒）
@@ -86,28 +124,20 @@ client.exe IP 端口    指定服务器地址
     收包用"先收 16 字节头、再按 nDataLen 收载荷"的状态机。
 
 
-
-
-
-
-
-
-
-
 整体架构
 
 共同基础：一套 16 字节协议头（common/protocol.h）
 结构：flag[4]="CAM0" + ctl_code + err_code + nDataLen，正好 16 字节
 控制码：1 心跳请求 / 2 心跳应答 / 3 请求图像 / 4 停止图像 / 5 图像数据 / 6 设备控制
 所有数据都按“先 16 字节头、再 nDataLen 字节载荷”的帧格式传输，这是 TCP 流式协议的标准做法，天然兼容粘包/半包
-Server（server.c）：三类线程
-图像生成线程（全局唯一）：高精度定时器每 20ms 生成一帧，写进全局缓冲并广播条件变量（server.c:443）
-控制线程（每客户端一个）：解析请求、启停发送线程（server.c:309）
-发送线程（每客户端一个）：等“新帧”信号后把最新一帧发出去（server.c:127）
-Client（client.c）：单线程 + 状态机
+Server（server.cpp）：三类线程
+图像生成线程（全局唯一）：高精度定时器每 20ms 生成一帧，写进全局缓冲并广播条件变量（server.cpp:443）
+控制线程（每客户端一个）：解析请求、启停发送线程（server.cpp:309）
+发送线程（每客户端一个）：等“新帧”信号后把最新一帧发出去（server.cpp:127）
+Client（client.cpp）：单线程 + 状态机
 所有网络、定时器、键盘动作都在同一个 event_base 里跑，天然线程安全
 用 ST_* 状态机管理连接阶段：ST_DISCONNECTED → ST_CONNECTING → ST_IDLE → ST_WAIT_HB/ST_IMAGE
-唯一的额外线程是键盘线程，因为 getchar() 阻塞，通过 event_active() 跨线程唤醒主循环（client.c:721）
+唯一的额外线程是键盘线程，因为 getchar() 阻塞，通过 event_active() 跨线程唤醒主循环（client.cpp:721）
 Server 关键点讲解
 生产者-消费者模型：g_img_lock + g_img_cond 把生成线程和各客户端的发送线程连起来。生成线程持锁写图、
 递增帧序号，发送线程在锁上 SleepConditionVariableCS 等信号。用“帧序号”而不是“标志位”判断有没有新帧，避免丢帧/重复帧
@@ -116,7 +146,7 @@ Server 关键点讲解
 send_lock：保证“16 字节头 + 图像数据”这两次 bufferevent_write 之间不被同一客户端的其他发送插队
 稳帧的关键：timeBeginPeriod(1) 把系统定时器精度提到 1ms，配合 CreateWaitableTimer 才能稳定 50fps
 Client 关键点讲解
-收图状态机（read_cb，client.c:128 之后的核心）：两阶段解析——先攒够 16 字节头，校验 CAM0 后调 on_header() 分发，再按 nDataLen 收载荷，收齐调 on_payload()。回调里用循环处理“一次到达多个包”
+收图状态机（read_cb，client.cpp:128 之后的核心）：两阶段解析——先攒够 16 字节头，校验 CAM0 后调 on_header() 分发，再按 nDataLen 收载荷，收齐调 on_payload()。回调里用循环处理“一次到达多个包”
 ST_IDLE 丢数据保护：read_cb 开头检查 ST_IDLE 时直接清空输入缓冲——这就是之前“按 q 后非法头标志刷屏、误重连”问题的根源（按 q 时残留半帧数据被当成了协议头）
 心跳闭环：空闲每 3 秒发心跳 → ST_WAIT_HB → 应答后回 ST_IDLE 重新计时；3 秒没应答触发读超时 → 断线重连，链路断掉最多 3 秒就能发现
 重连去重：g_reconnect_pending 防止断线事件重复触发连开多个定时器
@@ -124,6 +154,136 @@ GDI 预览：CreateDIBSection 拿到可直接写像素的内存，灰度展开�
 每个 client 独立保存目录：frames_时间_PID，多个客户端各存各的
 
 
+（C++11 重构版）
+
+本附录针对重构后的代码编写（class 模式，C++11，每个类独立 .h/.cpp）。
+
+一、目录结构（G:\Share\libevent）
+--------------------------------------------------------------------------------
+server\                         服务器端（C++11，VS2022 工程 + Linux Makefile）
+  main.cpp                      程序入口：创建 Server 对象并运行
+  server.h / server.cpp       Server 组合根：监听 9995、Ctrl+C 信号处理、
+                                启动/停止 图像源、WebServer、ClientManager
+  image_source.h / .cpp       ImageSource：图像生成线程（libevent 定时器，
+                                默认 20ms/帧）+ 生产者/消费者模型（锁+条件变量）
+  client_session.h / .cpp     ClientSession：每个客户端一个会话对象，内含
+                                控制线程（独立 event_base + bufferevent）与
+                                图像发送线程；断开后自行清理
+  client_manager.h / .cpp     ClientManager：会话管理表（最多 10 个），
+                                用 std::unique_ptr 持有会话对象，线程安全
+  web_server.h / .cpp         WebServer：mongoose HTTP 服务（8080 端口），
+                                浏览器界面 + /frame + /api/* JSON 接口
+  png_encoder.h / .cpp        PngEncoder：自包含极简 PNG 编码器（8bit 灰度，
+                                zlib stored 块，无第三方依赖）
+  mongoose.c / mongoose.h       Mongoose 7.22 单文件 HTTP 库（保持 C 编译）
+  index.html                    浏览器页面（按钮：开始/暂停/心跳/帧率/开关监控/
+                                显示尺寸）
+  server.sln / server.vcxproj   VS2022 工程（/std:c++14，mongoose.c 按 C 编译）
+  Makefile                      Linux 构建（g++ 编 C++，gcc 编 mongoose.c）
+  Release\server.exe            Windows 编译产物
+
+client\                         PC 客户端（C++11，VS2022 工程 + Linux Makefile）
+  main.cpp                      程序入口：解析命令行参数，创建 Client 并运行
+  client.h / .cpp             Client：单线程 libevent 事件循环 + 连接状态机
+                                （DISCONNECTED → CONNECTING → IDLE →
+                                WAIT_HB / IMAGE）+ 键盘输入线程
+  preview_window.h / .cpp     PreviewWindow：Win32 GDI 实时预览窗口
+                                （Linux 为空壳，仅存图模式）
+  client.sln / client.vcxproj   VS2022 工程
+  Makefile                      Linux 构建
+  Release\client.exe            Windows 编译产物
+
+common\                         两端共享模块
+  protocol.h                  协议定义：FrameHeader（16 字节 "CAM0" 头）、
+                                enum class 控制码/错误码、全部常量
+                                （端口/超时/图像尺寸/心跳间隔）
+  logger.h / .cpp             Logger：分级日志（DBG/INF/WRN/ERR）+ 时间戳 +
+                                线程安全，可整体调低/关闭输出级别
+
+使用手册.txt                    本文档
+make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
+
+二、class 类划分（为什么这样拆）
+--------------------------------------------------------------------------------
+拆类原则：按"核心业务实体"划分，每个类一个 .h（声明）+ .cpp（实现），
+头文件用 #pragma once；构造/析构负责资源申请与释放（RAII）；
+动态内存全部由 std::vector / std::unique_ptr / std::thread 管理，无裸 new/delete。
+
+  PngEncoder      纯工具类：灰度 → PNG 编码，无外部依赖，便于复用/单测
+  ImageSource     图像生产方：唯一写图线程，广播"新帧"信号；暂停=全局冻结
+  ClientSession   单个 TCP 连接：接收控制命令、启停发送线程、断开后自清理
+  ClientManager   会话容器：表满拒绝、计数、会话销毁入口（线程安全）
+  WebServer       浏览器界面：独立线程轮询 mg_mgr，不阻塞主监听循环
+  Server          组合根：组装上面所有对象，主循环监听 9995
+  Client          客户端状态机：心跳/收图/重连/按键全在一个事件循环
+  PreviewWindow   预览窗口：把 GDI 细节全部封装，Linux 下自动空实现
+
+三、Windows 构建与运行
+--------------------------------------------------------------------------------
+依赖：Visual Studio 2022（x64）+ libevent 开发包
+（本机默认在 G:\库\libevent\dev，工程已配置 include/lib 路径；
+ event.dll / event_core.dll / event_extra.dll 已随 Release 输出）。
+
+构建：
+  1) 双击打开 server\server.sln，选 Release x64 → 生成；
+  2) 双击打开 client\client.sln，选 Release x64 → 生成。
+  （命令行：MSBuild server.sln /p:Configuration=Release /p:Platform=x64）
+
+运行：
+  server\Release\server.exe                  # 服务器：监听 9995，Web 8080
+  client\Release\client.exe 127.0.0.1 9995   # 本机连接
+  client\Release\client.exe <服务器IP> 9995  # 远程连接
+  client\Release\client.exe <IP> 9995 -s     # 连接后自动开始收图（测试用）
+
+四、Ubuntu 构建与运行
+--------------------------------------------------------------------------------
+依赖：g++、gcc、libevent 开发包。
+若 apt 报 403/源失效：先换国内镜像源（清华/阿里）再 sudo apt update，
+并安装：sudo apt install g++ libevent-dev。
+
+  # 服务器（在共享目录中同步代码后，到 Ubuntu 上编译）
+  cd /mnt/hgfs/Share/libevent/server
+  make clean && make          # 生成 server（mongoose.c 用 gcc，其余用 g++）
+  ./server
+
+  # 客户端
+  cd /mnt/hgfs/Share/libevent/client
+  make clean && make
+  ./client 192.168.183.129 9995
+
+五、浏览器界面（http://<服务器IP>:8080）
+--------------------------------------------------------------------------------
+  /api/stats     轮询状态：帧号/在线客户端数/运行中/帧间隔/帧率/心跳数/显示尺寸
+  /api/start     恢复出图
+  /api/stop      暂停出图（/frame 返回冻结帧，画面不闪烁）
+  /api/heartbeat 心跳计数
+  /api/fps       POST body=毫秒数（20/50/100/200），动态调帧率
+  /api/display   POST {"w":宽,"h":高}，只改浏览器显示尺寸，不影响 640x480 生成
+  /frame         最新一帧 PNG（ETag=帧号，帧未变回 304，节省流量）
+
+页面按钮：开始(s) / 暂停(q) / 心跳(h) / 帧率(20/50/100/200ms) /
+          关闭监控(x) / 打开监控(o) / 宽高输入框 + 应用尺寸。
+
+六、PC 客户端按键
+--------------------------------------------------------------------------------
+  s   开始/恢复：恢复图像源并开始收图，同时打开预览窗口
+  q   暂停：停止收图并全局冻结图像源（恢复后从原位置继续）
+  o   打开监控：重新显示预览窗口
+  x   关闭监控：只隐藏窗口，程序与收图继续
+  b   开始保存图片（每 30 帧存一张 8bit BMP，目录 frames_时间_PID）
+  e   停止保存
+  h   手动心跳
+  Ctrl+C  退出
+
+七、协议速览（common\protocol.h）
+--------------------------------------------------------------------------------
+16 字节头：flag[4]="CAM0" + ctl_code(4) + err_code(4) + nDataLen(4)。
+控制码：1 心跳请求 / 2 心跳应答 / 3 请求图像 / 4 停止图像 / 5 图像数据 /
+        6 设备控制（未实现）/ 7 暂停图像源 / 8 恢复图像源。
+错误码：0 正常 / 1 图像等待超时 / 2 服务器已满 / 3 未知控制码 / 4 设备控制未实现。
+常量：端口 9995、最大客户端 10、图像 640x480、生成间隔默认 20ms、
+      心跳间隔 3s、读超时 3s、重连间隔 2s、等帧超时 5s。
 
 
 
+类架构详细说明见同目录 CLASSES.md（类清单 + 类图 + 逐类接口）。
