@@ -38,6 +38,7 @@ bool WebServer::start()
     if (!loadIndexHtml())
         LOG_WARN("[server] 警告：读取 index.html 失败，浏览器首页将报错");
 
+    mg_log_set(MG_LL_ERROR);   /* 关掉 mongoose accept/read/write 调试刷屏，只留错误 */
     mg_mgr_init(&mgr_);
     if (!mg_http_listen(&mgr_, "http://0.0.0.0:8080", onEvent, this)) {
         LOG_ERROR("[server] 浏览器界面监听 %d 失败", kWebPort);
