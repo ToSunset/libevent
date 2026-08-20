@@ -13,11 +13,11 @@ namespace cam {
 static const char* levelAbbr(LogLevel lv)
 {
     switch (lv) {
-        case LogLevel::kDebug: return "DBG";
-        case LogLevel::kInfo:  return "INF";
-        case LogLevel::kWarn:  return "WRN";
-        case LogLevel::kError: return "ERR";
-        default:               return "???";
+        case LogLevel::kDebug: return "DEBUG";
+        case LogLevel::kInfo:  return "INFO";
+        case LogLevel::kWarn:  return "WARN";
+        case LogLevel::kError: return "ERROR";
+        default:               return "?????";
     }
 }
 
@@ -68,7 +68,7 @@ void Logger::log(LogLevel lv, const char* fmt, va_list args)
         std::fprintf(stdout, "[%s.%03d] ", stamp, static_cast<int>(ms.count()));
     }
 
-    std::fprintf(stdout, "[%s] ", levelAbbr(lv));
+    std::fprintf(stdout, "[%-5s] ", levelAbbr(lv));
     std::vfprintf(stdout, fmt, args);
     std::fputc('\n', stdout);
     std::fflush(stdout);

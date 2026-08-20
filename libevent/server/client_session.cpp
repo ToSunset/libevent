@@ -47,7 +47,7 @@ void ClientSession::start()
         ctrlThread_ = std::thread(ctrlThreadMain, this);
         ctrlThread_.detach();
     } catch (...) {
-        LOG_ERROR("[server] 客户端 %lld 创建控制线程失败，断开",
+        LOG_ERROR("[NET] 客户端 %lld 创建控制线程失败，断开",
                   static_cast<long long>(fd_));
         evutil_closesocket(fd_);
     }
@@ -74,7 +74,7 @@ void ClientSession::sendThreadMain(ClientSession* self)
             uint8_t hdr[kHeadLen];
             h.toBytes(hdr);
             self->send(hdr, kHeadLen);
-            LOG_DEBUG("[server] 客户端 %lld 图像等待超时，已发错误头",
+            LOG_DEBUG("[NET] 客户端 %lld 图像等待超时，已发错误头",
                       static_cast<long long>(self->fd_));
             continue;
         }
@@ -87,6 +87,8 @@ void ClientSession::sendThreadMain(ClientSession* self)
             h.toBytes(self->sendBuf_.data());
             self->send(self->sendBuf_.data(),
                        kHeadLen + kImgDataLen);
+            self->sendCount_++;
+            self->sendBytes_ += static_cast<uint64_t>(kHeadLen + kImgDataLen);
         }
     }
 }
@@ -94,7 +96,7 @@ void ClientSession::sendThreadMain(ClientSession* self)
 void ClientSession::startSending()
 {
     if (sendThread_.joinable()) {
-        LOG_INFO("[server] 客户端 %lld 已在传输图像，忽略重复请求",
+        LOG_INFO("[NET] 客户端 %lld 已在传输图像，忽略重复请求",
                  static_cast<long long>(fd_));
         return;
     }
@@ -102,25 +104,27 @@ void ClientSession::startSending()
     try {
         sendThread_ = std::thread(sendThreadMain, this);
     } catch (...) {
-        LOG_ERROR("[server] 客户端 %lld 创建发送线程失败",
+        LOG_ERROR("[NET] 客户端 %lld 创建发送线程失败",
                   static_cast<long long>(fd_));
     }
-    LOG_INFO("[server] 客户端 %lld 开始传输图像",
+    LOG_INFO("[NET] 客户端 %lld 开始传输图像",
              static_cast<long long>(fd_));
 }
 
 void ClientSession::stopSending()
 {
     if (!sendThread_.joinable()) {
-        LOG_INFO("[server] 客户端 %lld 当前没有图像传输",
+        LOG_INFO("[NET] 客户端 %lld 当前没有图像传输",
                  static_cast<long long>(fd_));
         return;
     }
     sendStop_.store(true);
     source_->wakeAll();   /* 唤醒可能正在等待新帧的发送线程 */
     sendThread_.join();
-    LOG_INFO("[server] 客户端 %lld 停止传输图像",
-             static_cast<long long>(fd_));
+    LOG_INFO("[NET] 客户端 %lld 停止传输图像（已发 %llu 帧 / %llu 字节）",
+             static_cast<long long>(fd_),
+             static_cast<unsigned long long>(sendCount_),
+             static_cast<unsigned long long>(sendBytes_));
 }
 
 /* ---- 心跳应答 ---- */
@@ -141,7 +145,7 @@ void ClientSession::handleHeartbeat()
     h.toBytes(buf);
     std::memcpy(buf + kHeadLen, &val, sizeof(val));
     send(buf, sizeof(buf));
-    LOG_DEBUG("[server] 客户端 %lld 心跳应答 (%d)",
+    LOG_DEBUG("[NET] 客户端 %lld 心跳应答 (%d)",
               static_cast<long long>(fd_), static_cast<int>(val));
 }
 
@@ -182,8 +186,10 @@ void ClientSession::ctrlThreadMain(ClientSession* self)
         event_base_free(self->base_);
         self->base_ = nullptr;
     }
-    LOG_INFO("[server] 客户端 %lld 已清理",
-             static_cast<long long>(self->fd_));
+    LOG_INFO("[NET] 客户端 %lld 断开（已发 %llu 帧 / %llu 字节）",
+             static_cast<long long>(self->fd_),
+             static_cast<unsigned long long>(self->sendCount_),
+             static_cast<unsigned long long>(self->sendBytes_));
     self->mgr_->onClosed(self);
     return;
 
@@ -209,7 +215,7 @@ void ClientSession::onRead(struct bufferevent* bev, void* arg)
         if (bufferevent_read(bev, hdr, kHeadLen) != kHeadLen) break;
 
         if (!FrameHeader::isValid(hdr)) {
-            LOG_WARN("[server] 客户端 %lld 发来非法头，断开",
+            LOG_WARN("[NET] 客户端 %lld 发来非法头，断开",
                      static_cast<long long>(self->fd_));
             event_base_loopexit(self->base_, nullptr);
             return;
@@ -230,28 +236,28 @@ void ClientSession::onRead(struct bufferevent* bev, void* arg)
         case Ctl::PauseSource:
             /* 暂停图像源（全局冻结）：只改标志，不回包 */
             self->source_->pause();
-            LOG_INFO("[server] 客户端 %lld 暂停图像源（全局冻结）",
+            LOG_INFO("[NET] 客户端 %lld 暂停图像源（全局冻结）",
                      static_cast<long long>(self->fd_));
             break;
         case Ctl::ResumeSource:
             self->source_->resume();
-            LOG_INFO("[server] 客户端 %lld 恢复图像源",
+            LOG_INFO("[NET] 客户端 %lld 恢复图像源",
                      static_cast<long long>(self->fd_));
             break;
         case Ctl::CtrlDev:
             self->sendError(Ctl::CtrlDev, Err::CtrlDevNoSupport);
-            LOG_INFO("[server] 客户端 %lld 请求设备控制（未实现）",
+            LOG_WARN("[NET] 客户端 %lld 请求设备控制（未实现）",
                      static_cast<long long>(self->fd_));
             break;
         default:
             self->sendError(Ctl::CtrlDev, Err::UnknownCtl);
-            LOG_WARN("[server] 客户端 %lld 未知控制码 %d",
+            LOG_WARN("[NET] 客户端 %lld 未知控制码 %d",
                      static_cast<long long>(self->fd_), h.ctl);
             break;
         }
 
         if (h.len > 0)
-            LOG_DEBUG("[server] 客户端 %lld 请求带 %d 字节载荷，已忽略",
+            LOG_DEBUG("[NET] 客户端 %lld 请求带 %d 字节载荷，已忽略",
                       static_cast<long long>(self->fd_), h.len);
     }
 }
@@ -265,7 +271,7 @@ void ClientSession::onEvent(struct bufferevent* bev, short events, void* arg)
         if (events & BEV_EVENT_TIMEOUT) why = "读超时";
         else if (events & BEV_EVENT_EOF) why = "客户端关闭连接";
         else why = "网络错误";
-        LOG_INFO("[server] 客户端 %lld %s",
+        LOG_INFO("[NET] 客户端 %lld %s",
                  static_cast<long long>(self->fd_), why);
         event_base_loopexit(self->base_, nullptr);
     }

@@ -108,7 +108,7 @@ void Client::recvReset()
 int Client::expectPayload(size_t len)
 {
     if (len > 16u * 1024u * 1024u) {   /* 上限保护，防异常长度 */
-        LOG_WARN("[client] 数据长度过大 (%zu)，放弃当前连接\n", len);
+        LOG_WARN("[CLT] 数据长度过大 (%zu)，放弃当前连接", len);
         return -1;
     }
     if (len > payload_.size()) payload_.resize(len);
@@ -127,7 +127,7 @@ void Client::onHeader(const FrameHeader& h)
 
     if (state_ == State::WaitHb) {
         if (h.ctl != static_cast<int32_t>(Ctl::HeartbeatResp)) {
-            LOG_WARN("[client] 心跳阶段收到意外控制码 %d，重连\n", h.ctl);
+            LOG_WARN("[CLT] 心跳阶段收到意外控制码 %d，重连", h.ctl);
             bad();
             return;
         }
@@ -137,12 +137,12 @@ void Client::onHeader(const FrameHeader& h)
 
     if (state_ == State::Image) {
         if (h.ctl != static_cast<int32_t>(Ctl::ImgData)) {
-            LOG_WARN("[client] 收图阶段收到意外控制码 %d，重连\n", h.ctl);
+            LOG_WARN("[CLT] 收图阶段收到意外控制码 %d，重连", h.ctl);
             bad();
             return;
         }
         if (h.err != static_cast<int32_t>(Err::Ok)) {
-            LOG_WARN("[client] 服务器错误码 %d（如图像超时），继续等下一帧\n", h.err);
+            LOG_WARN("[CLT] 服务器错误码 %d（如图像超时），继续等下一帧", h.err);
             recvReset();
             return;
         }
@@ -154,7 +154,7 @@ void Client::onHeader(const FrameHeader& h)
         return;
     }
 
-    LOG_WARN("[client] 状态 %d 下收到意外数据，重连\n", static_cast<int>(state_));
+    LOG_WARN("[CLT] 状态 %d 下收到意外数据，重连", static_cast<int>(state_));
     bad();
 }
 
@@ -164,7 +164,7 @@ void Client::onPayload()
         int32_t val;
         std::memcpy(&val, payload_.data(), kHeartbeatDataLen);
         hbCount_++;
-        LOG_DEBUG("[client] 心跳应答 #%u：%d\n", hbCount_, static_cast<int>(val));
+        LOG_DEBUG("[CLT] 心跳应答 #%u：%d", hbCount_, static_cast<int>(val));
         state_ = State::Idle;
         recvReset();
         setReadTimeout(0);
@@ -174,7 +174,7 @@ void Client::onPayload()
 
     if (state_ == State::Image) {
         if (payloadLen_ != static_cast<size_t>(kImgDataLen)) {
-            LOG_WARN("[client] 图像长度异常：%zu (期望 %d)\n",
+            LOG_WARN("[CLT] 图像长度异常：%zu (期望 %d)",
                    payloadLen_, kImgDataLen);
         } else {
             frameCount_++;
@@ -182,7 +182,7 @@ void Client::onPayload()
             preview_.showFrame(payload_.data(), kImgWidth, kImgHeight);
             if (saving_.load() && frameCount_ % saveEvery_ == 0)
                 saveFrame(payload_.data(), payloadLen_, frameCount_);
-            LOG_DEBUG("[client] 收到图像 #%u：%zu 字节\n",
+            LOG_DEBUG("[CLT] 收到图像 #%u：%zu 字节",
                    frameCount_, payloadLen_);
         }
         recvReset();   /* 继续收下一帧 */
@@ -207,7 +207,7 @@ void Client::doConnect()
     sin.sin_family = AF_INET;
     sin.sin_port   = htons(static_cast<unsigned short>(port_));
     if (evutil_inet_pton(AF_INET, ip_.c_str(), &sin.sin_addr) != 1) {
-        LOG_WARN("[client] IP 地址无效：%s\n", ip_.c_str());
+        LOG_WARN("[CLT] IP 地址无效：%s", ip_.c_str());
         teardownConnection();
         scheduleReconnect();
         return;
@@ -216,7 +216,7 @@ void Client::doConnect()
     state_ = State::Connecting;
     if (bufferevent_socket_connect(bev_, reinterpret_cast<struct sockaddr*>(&sin),
                                    sizeof(sin)) < 0) {
-        LOG_WARN("[client] 连接失败，稍后重试\n");
+        LOG_WARN("[CLT] 连接失败，稍后重试");
         teardownConnection();
         scheduleReconnect();
     }
@@ -262,11 +262,11 @@ void Client::disarmHbTimer()
 void Client::requestImage()
 {
     if (state_ != State::Idle) {
-        LOG_WARN("[client] 当前状态 %d，需空闲状态才能开始收图\n",
+        LOG_WARN("[CLT] 当前状态 %d，需空闲状态才能开始收图",
                static_cast<int>(state_));
         return;
     }
-    LOG_INFO("[client] 发送请求图像...\n");
+    LOG_INFO("[CLT] 发送请求图像...");
     sendHead(Ctl::ReqImage, 0);
     disarmHbTimer();
     state_ = State::Image;
@@ -277,11 +277,11 @@ void Client::requestImage()
 void Client::stopImage()
 {
     if (state_ != State::Image) {
-        LOG_WARN("[client] 当前不在收图状态\n");
+        LOG_INFO("[CLT] 当前不在收图状态");
         return;
     }
     saving_.store(0);   /* 演示停止，保存同步关闭 */
-    LOG_INFO("[client] 发送停止图像...\n");
+    LOG_INFO("[CLT] 发送停止图像...");
     sendHead(Ctl::StopImage, 0);
     state_ = State::Idle;
     recvReset();
@@ -304,9 +304,9 @@ void Client::initSaveDir()
                   static_cast<unsigned>(GetCurrentProcessId()));
     if (CreateDirectoryA(dir, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS) {
         saveDir_ = dir;
-        LOG_INFO("保存目录 : %s/\n", saveDir_.c_str());
+        LOG_INFO("[CLT] 保存目录 : %s/", saveDir_.c_str());
     } else {
-        LOG_WARN("保存目录 : 创建失败（错误码 %lu），退回当前目录\n",
+        LOG_WARN("[CLT] 保存目录 : 创建失败（错误码 %lu），退回当前目录",
                static_cast<unsigned long>(GetLastError()));
     }
 #else
@@ -318,9 +318,9 @@ void Client::initSaveDir()
                   tmv.tm_hour, tmv.tm_min, tmv.tm_sec, static_cast<int>(getpid()));
     if (mkdir(dir, 0755) == 0 || errno == EEXIST) {
         saveDir_ = dir;
-        LOG_INFO("保存目录 : %s/\n", saveDir_.c_str());
+        LOG_INFO("[CLT] 保存目录 : %s/", saveDir_.c_str());
     } else {
-        LOG_WARN("保存目录 : 创建失败（错误码 %d），退回当前目录\n", errno);
+        LOG_WARN("[CLT] 保存目录 : 创建失败（错误码 %d），退回当前目录", errno);
     }
 #endif
 }
@@ -367,7 +367,8 @@ void Client::saveFrame(const uint8_t* data, size_t len, uint32_t idx)
         std::fwrite(data + static_cast<size_t>(y) * kImgWidth, 1, kImgWidth, fp);
 
     std::fclose(fp);
-    LOG_INFO("[client] 已保存 %s\n", name);
+    saveCount_++;
+    LOG_INFO("[CLT] 已保存 %s（累计 %u 张）", name, saveCount_);
 }
 
 /* ---- 回调 ---- */
@@ -376,7 +377,7 @@ void Client::hbTimerCb(evutil_socket_t fd, short what, void* arg)
 {
     auto* self = static_cast<Client*>(arg);
     if (self->state_ != State::Idle) return;
-    LOG_DEBUG("[client] 发送心跳请求\n");
+    LOG_DEBUG("[CLT] 发送心跳请求");
     self->sendHead(Ctl::HeartbeatReq, 0);
     self->disarmHbTimer();
     self->state_ = State::WaitHb;
@@ -389,7 +390,7 @@ void Client::reconnectTimerCb(evutil_socket_t fd, short what, void* arg)
     auto* self = static_cast<Client*>(arg);
     self->reconnectPending_.store(0);
     self->reconnectCount_++;
-    LOG_WARN("[client] 第 %u 次重连 %s:%d ...\n",
+    LOG_WARN("[CLT] 第 %u 次重连 %s:%d ...",
            self->reconnectCount_, self->ip_.c_str(), self->port_);
     self->doConnect();
 }
@@ -417,7 +418,7 @@ void Client::readCb(struct bufferevent* bev, void* arg)
             self->hdrGot_ = 0;
 
             if (!FrameHeader::isValid(self->hdr_)) {
-                LOG_WARN("[client] 非法头标志，重连\n");
+                LOG_WARN("[CLT] 非法头标志，重连");
                 self->scheduleReconnect();
                 return;
             }
@@ -447,7 +448,7 @@ void Client::eventCb(struct bufferevent* bev, short events, void* arg)
     auto* self = static_cast<Client*>(arg);
 
     if (events & BEV_EVENT_CONNECTED) {
-        LOG_INFO("[client] 连接成功 (%s:%d)\n", self->ip_.c_str(), self->port_);
+        LOG_INFO("[CLT] 连接成功 (%s:%d)", self->ip_.c_str(), self->port_);
         self->state_ = State::Idle;
         self->recvReset();
         self->setReadTimeout(0);
@@ -461,7 +462,7 @@ void Client::eventCb(struct bufferevent* bev, short events, void* arg)
         if (events & BEV_EVENT_TIMEOUT) why = "读超时";
         else if (events & BEV_EVENT_EOF) why = "服务器断开";
         else why = "网络错误";
-        LOG_WARN("[client] 连接中断：%s，准备重连...\n", why);
+        LOG_WARN("[CLT] 连接中断：%s，准备重连...", why);
         self->teardownConnection();
         self->scheduleReconnect();
     }
@@ -489,26 +490,26 @@ void Client::keyControlCb(evutil_socket_t fd, short what, void* arg)
         break;
     case 'b': case 'B':
         if (self->state_ != State::Image) {
-            LOG_WARN("[client] 请先按 s 开始图像演示\n");
+            LOG_INFO("[CLT] 请先按 s 开始图像演示");
             break;
         }
         if (self->saveDir_.empty()) self->initSaveDir();
         self->saving_.store(1);
-        LOG_INFO("[client] 开始保存图片（每 %d 帧存一张 BMP）\n", self->saveEvery_);
+        LOG_INFO("[CLT] 开始保存图片（每 %d 帧存一张 BMP）", self->saveEvery_);
         break;
     case 'e': case 'E':
         self->saving_.store(0);
-        LOG_INFO("[client] 停止保存图片（演示继续）\n");
+        LOG_INFO("[CLT] 停止保存图片（演示继续）");
         break;
     case 'x': case 'X':
         /* 关闭监控：只隐藏窗口，程序与收图继续（与网页端 x 一致） */
         self->preview_.setVisible(false);
-        LOG_INFO("[client] 关闭监控（窗口隐藏，程序继续运行）\n");
+        LOG_INFO("[CLT] 关闭监控（窗口隐藏，程序继续运行）");
         break;
     case 'o': case 'O':
         /* 打开监控：重新显示窗口，立即刷新最新一帧 */
         self->preview_.setVisible(true);
-        LOG_INFO("[client] 打开监控（窗口显示）\n");
+        LOG_INFO("[CLT] 打开监控（窗口显示）");
         break;
     case 'l': case 'L':
         /* 循环切换日志级别：调试->信息->警告->错误->关闭->调试 */
@@ -523,7 +524,7 @@ void Client::keyControlCb(evutil_socket_t fd, short what, void* arg)
                 case LogLevel::kError: cn = "错误"; break;
                 default:               cn = "关闭"; break;
             }
-            printf("[client] 日志级别: %s\n", cn);
+            printf("[CLT] 日志级别: %s\n", cn);
         }
         break;
     default:
@@ -540,16 +541,18 @@ void Client::uiTimerCb(evutil_socket_t fd, short what, void* arg)
         event_base_loopbreak(self->base_);
         return;
     }
-    if (!self->preview_.hasWindow()) return;
-
     const uint32_t now = nowMs();
     if (now - self->fpsStart_ >= 1000) {
         self->fps_ = self->secondFrames_;
         self->secondFrames_ = 0;
         self->fpsStart_ = now;
-        self->preview_.setTitle(kImgWidth, kImgHeight,
-                                self->frameCount_, self->fps_);
+        LOG_DEBUG("[CLT] 帧率 %u 帧/秒（累计 %u 帧）",
+                  self->fps_, self->frameCount_);
     }
+    if (!self->preview_.hasWindow()) return;
+
+    self->preview_.setTitle(kImgWidth, kImgHeight,
+                            self->frameCount_, self->fps_);
 }
 
 void Client::stdinThreadMain(Client* self)
@@ -571,7 +574,7 @@ int Client::run()
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        LOG_ERROR("WSAStartup 失败\n");
+        LOG_ERROR("[CLT] WSAStartup 初始化失败");
         return 1;
     }
     SetConsoleOutputCP(CP_UTF8);
@@ -582,7 +585,7 @@ int Client::run()
 
     base_ = event_base_new();
     if (!base_) {
-        LOG_ERROR("event_base_new 失败\n");
+        LOG_ERROR("[CLT] 初始化事件循环失败");
         return 1;
     }
 
@@ -595,7 +598,7 @@ int Client::run()
         stdinThread_ = std::thread(stdinThreadMain, this);
         stdinThread_.detach();
     } catch (...) {
-        LOG_ERROR("[client] 键盘线程创建失败\n");
+        LOG_ERROR("[CLT] 键盘线程创建失败");
     }
 
     if (preview_.create(kImgWidth, kImgHeight)) {
@@ -604,9 +607,9 @@ int Client::run()
         tv.tv_usec = 10000;
         event_add(uiTimer_, &tv);
         fpsStart_ = nowMs();
-        LOG_INFO("预览窗口 : 已打开，实时显示收到的图像（ESC/关闭按钮=隐藏窗口）\n");
+        LOG_INFO("[CLT] 预览窗口 : 已打开，实时显示收到的图像（ESC/关闭按钮=隐藏窗口）");
     } else {
-        LOG_INFO("预览窗口 : 未打开，当前仅存图模式（Linux 下为正常状态）\n");
+        LOG_INFO("[CLT] 预览窗口 : 未打开，当前仅存图模式（Linux 下为正常状态）");
     }
 
     printf("=============================================\n");
@@ -624,7 +627,7 @@ printf("          退出按 Ctrl+C\n");
     doConnect();
     event_base_dispatch(base_);
 
-    LOG_INFO("[client] 程序结束\n");
+    LOG_INFO("[CLT] 程序结束");
     teardownConnection();
     if (hbTimer_) event_free(hbTimer_);
     if (reconnectTimer_) event_free(reconnectTimer_);

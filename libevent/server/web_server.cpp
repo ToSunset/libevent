@@ -36,12 +36,12 @@ bool WebServer::start()
     if (thread_.joinable()) return true;
 
     if (!loadIndexHtml())
-        LOG_WARN("[server] 警告：读取 index.html 失败，浏览器首页将报错");
+        LOG_WARN("[WEB] 警告：读取 index.html 失败，浏览器首页将报错");
 
     mg_log_set(MG_LL_ERROR);   /* 关掉 mongoose accept/read/write 调试刷屏，只留错误 */
     mg_mgr_init(&mgr_);
     if (!mg_http_listen(&mgr_, "http://0.0.0.0:8080", onEvent, this)) {
-        LOG_ERROR("[server] 浏览器界面监听 %d 失败", kWebPort);
+        LOG_ERROR("[WEB] 浏览器界面监听 %d 失败", kWebPort);
         mg_mgr_free(&mgr_);
         return false;
     }
@@ -54,7 +54,7 @@ bool WebServer::start()
         mg_mgr_free(&mgr_);
         return false;
     }
-    LOG_INFO("[server] 浏览器界面已启动: http://<本机IP>:%d", kWebPort);
+    LOG_INFO("[WEB] 浏览器界面已启动: http://<本机IP>:%d", kWebPort);
     return true;
 }
 
@@ -64,7 +64,7 @@ void WebServer::stop()
     run_.store(false);
     thread_.join();
     mg_mgr_free(&mgr_);
-    LOG_INFO("[server] 浏览器界面已停止");
+    LOG_INFO("[WEB] 浏览器界面已停止");
 }
 
 void WebServer::threadMain(WebServer* self)
@@ -193,6 +193,8 @@ void WebServer::handleFps(struct mg_connection* c, struct mg_http_message* hm)
                       hm->body.buf);
     const int val = std::atoi(ms);
     source_->setIntervalMs(val);
+    LOG_INFO("[WEB] 浏览器设置帧间隔为 %dms（约 %.1f fps）", val,
+             1000.0 / val);
     std::snprintf(reply, sizeof(reply), "{\"ok\":true,\"interval_ms\":%d}",
                   source_->intervalMs());
     replyJson(c, reply);
@@ -211,7 +213,7 @@ void WebServer::handleDisplay(struct mg_connection* c, struct mg_http_message* h
     }
     dispW_ = static_cast<int>(w);
     dispH_ = static_cast<int>(h);
-    LOG_INFO("[server] 浏览器界面显示尺寸设为 %dx%d", dispW_, dispH_);
+    LOG_INFO("[WEB] 浏览器界面显示尺寸设为 %dx%d", dispW_, dispH_);
     std::snprintf(reply, sizeof(reply), "{\"ok\":true,\"w\":%d,\"h\":%d}",
                   dispW_, dispH_);
     replyJson(c, reply);
@@ -255,7 +257,7 @@ void WebServer::handleLog(struct mg_connection* c, struct mg_http_message* hm)
     char buf[80];
     std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"level\":\"%s\"}",
                   Logger::levelName(nxt));
-    LOG_INFO("[server] 浏览器界面日志级别切换为 %s", Logger::levelName(nxt));
+    LOG_INFO("[WEB] 浏览器界面日志级别切换为 %s", Logger::levelName(nxt));
     replyJson(c, buf);
 }
 
@@ -270,11 +272,11 @@ void WebServer::handleHttp(struct mg_connection* c, struct mg_http_message* hm)
         serveStats(c);
     } else if (mg_match(hm->uri, mg_str("/api/start"), nullptr)) {
         source_->resume();
-        LOG_INFO("[server] 浏览器界面恢复出图");
+        LOG_INFO("[WEB] 浏览器界面恢复出图");
         replyJson(c, "{\"ok\":true,\"running\":true}");
     } else if (mg_match(hm->uri, mg_str("/api/stop"), nullptr)) {
         source_->pause();
-        LOG_INFO("[server] 浏览器界面暂停出图（返回冻结帧）");
+        LOG_INFO("[WEB] 浏览器界面暂停出图（返回冻结帧）");
         replyJson(c, "{\"ok\":true,\"running\":false}");
     } else if (mg_match(hm->uri, mg_str("/api/heartbeat"), nullptr)) {
         const int n = heartbeat_.fetch_add(1) + 1;
