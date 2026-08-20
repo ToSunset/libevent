@@ -8,7 +8,7 @@ LDFLAGS = -levent -levent_pthreads -lpthread
 
 TARGET = server
 SRC    = server.c mongoose.c
-HDR    = ../common/protocol.h ../common/thread_compat.h mongoose.h
+HDR    = ../common/protocol.h mongoose.h
 
 all: $(TARGET)
 

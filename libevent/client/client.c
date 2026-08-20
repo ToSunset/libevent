@@ -315,12 +315,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
-            ShowWindow(hwnd, SW_HIDE);   /* 关闭监控：只隐藏窗口，不退出 */
+            DestroyWindow(hwnd);
             return 0;
         }
         break;
     case WM_CLOSE:
-        ShowWindow(hwnd, SW_HIDE);       /* 关闭监控：只隐藏窗口，不退出 */
+        DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -409,8 +409,7 @@ static void preview_show(const uint8_t *gray)
         *p++ = v;
         *p++ = v;
     }
-    /* 监控关闭（窗口隐藏）时只更新内存像素、跳过重绘；重新打开时立即显示最新帧 */
-    if (g_wnd && IsWindowVisible(g_wnd)) {
+    if (g_wnd) {
         InvalidateRect(g_wnd, NULL, FALSE);
         UpdateWindow(g_wnd);
     }
@@ -772,21 +771,10 @@ static void key_control_cb(evutil_socket_t fd, short what, void *arg)
 
     switch (act) {
     case 's': case 'S':
-        /* 开始：恢复图像源（若被暂停）并开始收图，同时打开监控窗口 */
-        if (g_bev)
-            send_head(CTL_RESUME_SOURCE, 0);
         request_image();
-#ifdef _WIN32
-        if (g_wnd)
-            ShowWindow(g_wnd, SW_SHOW);
-#endif
         break;
     case 'q': case 'Q':
-        /* 暂停：停止本端收图并冻结图像源（全局），恢复后从原位置继续 */
-        if (g_state == ST_IMAGE)
-            stop_image();
-        if (g_bev)
-            send_head(CTL_PAUSE_SOURCE, 0);
+        stop_image();
         break;
     case 'h': case 'H':
         if (g_state == ST_IDLE)
@@ -807,23 +795,9 @@ static void key_control_cb(evutil_socket_t fd, short what, void *arg)
         printf("[client] 停止保存图片（演示继续）\n");
         break;
     case 'x': case 'X':
-        /* 关闭监控：只隐藏窗口，程序与收图继续（与网页端 x 一致） */
-#ifdef _WIN32
-        if (g_wnd)
-            ShowWindow(g_wnd, SW_HIDE);
-#endif
-        printf("[client] 关闭监控（窗口隐藏，程序继续运行）\n");
-        break;
-    case 'o': case 'O':
-        /* 打开监控：重新显示窗口，立即刷新最新一帧 */
-#ifdef _WIN32
-        if (g_wnd) {
-            ShowWindow(g_wnd, SW_SHOW);
-            InvalidateRect(g_wnd, NULL, FALSE);
-            UpdateWindow(g_wnd);
-        }
-#endif
-        printf("[client] 打开监控（窗口显示）\n");
+        printf("[client] 退出\n");
+        atomic_exchange(&g_running, 0);
+        event_base_loopbreak(g_base);
         break;
     default:
         break;
@@ -956,7 +930,7 @@ int main(int argc, char **argv)
         tv.tv_usec = 10000;
         event_add(g_ui_timer, &tv);
         g_fps_start = now_ms();
-        printf("预览窗口 : 已打开，实时显示收到的图像（ESC/关闭按钮=隐藏窗口）\n");
+        printf("预览窗口 : 已打开，实时显示收到的图像（窗口内按 ESC 退出）\n");
     } else {
         printf("预览窗口 : 未打开，当前仅存图模式（Linux 下为正常状态）\n");
     }
@@ -966,10 +940,9 @@ int main(int argc, char **argv)
     printf(" 服务器 : %s:%d\n", g_server_ip, g_server_port);
     printf(" 心跳   : 每 %dms 一次（空闲时）\n", CLIENT_HEARTBEAT_INTERVAL_MS);
     printf(" 读超时 : %dms\n", CLIENT_READ_TIMEOUT_MS);
-    printf(" 按键   : s=开始/恢复     q=暂停（冻结图像源）\n");
-    printf("          o=打开监控      x=关闭监控（隐藏窗口）\n");
+    printf(" 按键   : s=开始图像演示  q=停止演示\n");
     printf("          b=开始保存图片  e=停止保存\n");
-    printf("          h=手动心跳      退出按 Ctrl+C\n");
+    printf("          h=手动心跳      x=退出\n");
     printf("=============================================\n");
 
     /* 发起首次连接 -> 进入事件循环。

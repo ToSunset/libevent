@@ -24,8 +24,6 @@ typedef char assert_img_head_16[(sizeof(ImgHead_t) == 16) ? 1 : -1];
 #define CTL_STOP_IMAGE      4   /* 客户端 -> 服务器：停止传输图像 */
 #define CTL_IMG_DATA        5   /* 服务器 -> 客户端：图像数据（nDataLen 字节） */
 #define CTL_CTRL_DEV        6   /* 客户端 -> 服务器：请求控制设备（暂未实现） */
-#define CTL_PAUSE_SOURCE    7   /* 客户端 -> 服务器：暂停图像源（全局冻结，恢复后从原位置继续） */
-#define CTL_RESUME_SOURCE   8   /* 客户端 -> 服务器：恢复图像源 */
 
 /* 错误码 */
 #define ERR_OK                  0   /* 正常 */
