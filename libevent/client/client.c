@@ -33,17 +33,24 @@
  *       -s 表示连接成功后自动开始收图（配合脚本/测试用）
  */
 
+#ifdef _WIN32
 #define _WIN32_WINNT 0x0600
 #define WINVER       0x0600
+#include <winsock2.h>
+#include <windows.h>
+#else
+#include <errno.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <wchar.h>
-
-#include <winsock2.h>
-#include <windows.h>
 
 #include <event2/event.h>
 #include <event2/bufferevent.h>
@@ -52,6 +59,56 @@
 #include <event2/thread.h>
 
 #include "protocol.h"
+
+/* ---------------- 跨平台小工具 ---------------- */
+/* 原子交换：Windows 用 Interlocked，Linux(gcc) 用 __atomic。
+ * 用于键盘线程与主循环之间的按键传递、保存开关、退出标志。 */
+static int32_t atomic_exchange(volatile int32_t *p, int32_t v)
+{
+#ifdef _WIN32
+    return (int32_t)InterlockedExchange((volatile LONG *)p, (LONG)v);
+#else
+    return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST);
+#endif
+}
+
+/* 单调时钟毫秒：用于 fps 统计，跨平台。 */
+static uint32_t now_ms(void)
+{
+#ifdef _WIN32
+    return (uint32_t)GetTickCount();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+#endif
+}
+
+/* BMP 文件头/信息头：布局与 Windows 的 BITMAPFILEHEADER/BITMAPINFOHEADER
+ * 完全一致，用 stdint 类型自描述，避免依赖 windows.h。 */
+#define BMP_COMP_RGB 0
+#pragma pack(push, 1)
+typedef struct {
+    uint16_t bfType;
+    uint32_t bfSize;
+    uint16_t bfReserved1;
+    uint16_t bfReserved2;
+    uint32_t bfOffBits;
+} bmp_fileheader_t;
+typedef struct {
+    uint32_t biSize;
+    int32_t  biWidth;
+    int32_t  biHeight;
+    uint16_t biPlanes;
+    uint16_t biBitCount;
+    uint32_t biCompression;
+    uint32_t biSizeImage;
+    int32_t  biXPelsPerMeter;
+    int32_t  biYPelsPerMeter;
+    uint32_t biClrUsed;
+    uint32_t biClrImportant;
+} bmp_infoheader_t;
+#pragma pack(pop)
 
 /* ---------------- 状态 ---------------- */
 /* 连接状态机：描述客户端当前"所处阶段"，所有回调都先看状态再行动，
@@ -73,9 +130,9 @@ typedef enum {
 static struct event_base  *g_base;
 static struct bufferevent *g_bev;
 static state_t  g_state = ST_DISCONNECTED;
-static volatile LONG g_running = 1;
-static volatile LONG g_reconnect_pending = 0;
-static volatile LONG g_key_action = 0;
+static volatile int32_t g_running = 1;
+static volatile int32_t g_reconnect_pending = 0;
+static volatile int32_t g_key_action = 0;
 
 /* 服务器地址 */
 static char g_server_ip[64] = "127.0.0.1";
@@ -102,22 +159,24 @@ static uint32_t g_frame_count = 0;
 static uint32_t g_hb_count = 0;
 static uint32_t g_reconnect_count = 0;
 static int      g_save_every = 30;   /* 开启保存后，每隔多少帧存一张 BMP */
-static volatile LONG g_saving = 0;    /* 保存开关：1=保存中 0=不保存（纯演示） */
+static volatile int32_t g_saving = 0; /* 保存开关：1=保存中 0=不保存（纯演示） */
 static char     g_save_dir[64] = "";  /* 本 client 专属保存目录（按 b 首次开启保存时创建，空串=当前目录） */
 
 /* ---------------- 实时预览窗口（Win32 GDI） ----------------
  * GDI 资源全部在主循环线程创建/使用（窗口消息也由 10ms 定时器泵），
  * 因此不存在跨线程操作窗口的问题。g_rgb_buf 是 DIB 的像素内存，
  * 直接往里面填 24 位 RGB 再 BitBlt 到窗口，就是最简单高效的预览方式。 */
+static struct event *g_ui_timer = NULL;    /* 窗口消息泵 + fps 统计 */
+#ifdef _WIN32
 static HWND     g_wnd = NULL;
 static HDC      g_mem_dc = NULL;
 static HBITMAP  g_dib = NULL;
 static HGDIOBJ  g_old_bmp = NULL;
 static uint8_t *g_rgb_buf = NULL;          /* 24 位 RGB 缓冲（DIB 段内存） */
-static struct event *g_ui_timer = NULL;    /* 窗口消息泵 + fps 统计 */
+#endif
 static uint32_t g_second_frames = 0;
 static uint32_t g_fps = 0;
-static DWORD    g_fps_start = 0;
+static uint32_t g_fps_start = 0;
 
 /* 定时器 */
 static struct event *g_hb_timer = NULL;        /* 心跳周期（空闲时 3 秒） */
@@ -196,14 +255,14 @@ static void save_frame(const uint8_t *data, size_t len, uint32_t idx)
 {
     char name[64];
     FILE *fp;
-    BITMAPFILEHEADER bf;
-    BITMAPINFOHEADER bi;
+    bmp_fileheader_t bf;
+    bmp_infoheader_t bi;
     const int row = IMG_WIDTH;   /* 8bpp，640 字节，无需行填充 */
 
     if (len < (size_t)(IMG_WIDTH * IMG_HEIGHT))
         return;
     if (g_save_dir[0])
-        snprintf(name, sizeof(name), "%s\\frame_%04u.bmp", g_save_dir, idx);
+        snprintf(name, sizeof(name), "%s/frame_%04u.bmp", g_save_dir, idx);
     else
         snprintf(name, sizeof(name), "frame_%04u.bmp", idx);
     fp = fopen(name, "wb");
@@ -213,16 +272,16 @@ static void save_frame(const uint8_t *data, size_t len, uint32_t idx)
     memset(&bf, 0, sizeof(bf));
     memset(&bi, 0, sizeof(bi));
     bf.bfType = 0x4D42;                              /* "BM" */
-    bf.bfOffBits = (DWORD)(sizeof(bf) + sizeof(bi) + 256 * 4);
-    bf.bfSize = bf.bfOffBits + (DWORD)(row * IMG_HEIGHT);
+    bf.bfOffBits = (uint32_t)(sizeof(bf) + sizeof(bi) + 256 * 4);
+    bf.bfSize = bf.bfOffBits + (uint32_t)(row * IMG_HEIGHT);
 
-    bi.biSize = sizeof(bi);
+    bi.biSize = (uint32_t)sizeof(bi);
     bi.biWidth = IMG_WIDTH;
     bi.biHeight = IMG_HEIGHT;
     bi.biPlanes = 1;
     bi.biBitCount = 8;
-    bi.biCompression = BI_RGB;
-    bi.biSizeImage = (DWORD)(row * IMG_HEIGHT);
+    bi.biCompression = BMP_COMP_RGB;
+    bi.biSizeImage = (uint32_t)(row * IMG_HEIGHT);
     bi.biClrUsed = 256;
 
     fwrite(&bf, 1, sizeof(bf), fp);
@@ -239,7 +298,8 @@ static void save_frame(const uint8_t *data, size_t len, uint32_t idx)
     printf("[client] 已保存 %s\n", name);
 }
 
-/* ---------------- 实时预览窗口（Win32 GDI，纯系统 API） ---------------- */
+/* ---------------- 实时预览窗口（仅 Windows：Win32 GDI） ---------------- */
+#ifdef _WIN32
 /* 窗口过程：WM_PAINT 时把 DIB 内容 BitBlt 到窗口；ESC 或关闭按钮
  * 都会销毁窗口，WM_DESTROY 里 PostQuitMessage 使消息泵退出。 */
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -279,7 +339,7 @@ static void pump_window_messages(void)
     MSG msg;
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
-            InterlockedExchange(&g_running, 0);
+            atomic_exchange(&g_running, 0);
             event_base_loopbreak(g_base);
             return;
         }
@@ -359,7 +419,7 @@ static void preview_show(const uint8_t *gray)
  * 用窗口标题显示统计信息，避免在画面上叠字影响看图。 */
 static void ui_timer_cb(evutil_socket_t fd, short what, void *arg)
 {
-    DWORD now = GetTickCount();
+    uint32_t now = now_ms();
 
     pump_window_messages();
     if (!g_wnd)
@@ -375,6 +435,17 @@ static void ui_timer_cb(evutil_socket_t fd, short what, void *arg)
         SetWindowTextW(g_wnd, title);
     }
 }
+
+#else
+/* Linux 空壳：无图形界面，ui_window_create 返回 -1 即走“仅存图”分支。 */
+static int ui_window_create(void) { return -1; }
+static void preview_show(const uint8_t *gray) { (void)gray; }
+static void ui_timer_cb(evutil_socket_t fd, short what, void *arg)
+{
+    (void)fd; (void)what; (void)arg;
+    (void)g_fps; (void)g_fps_start;   /* 避免 Linux 下 unused 警告 */
+}
+#endif
 
 /* ---------------- 定时器/动作 ---------------- */
 /* 挂起心跳定时器：间隔 CLIENT_HEARTBEAT_INTERVAL_MS（空闲时才有效）。 */
@@ -440,7 +511,7 @@ static void stop_image(void)
         printf("[client] 当前不在收图状态\n");
         return;
     }
-    InterlockedExchange(&g_saving, 0);   /* 演示停止，保存同步关闭 */
+    atomic_exchange(&g_saving, 0);   /* 演示停止，保存同步关闭 */
     printf("[client] 发送停止图像...\n");
     send_head(CTL_STOP_IMAGE, 0);
     g_state = ST_IDLE;
@@ -696,7 +767,7 @@ static void event_cb(struct bufferevent *bev, short events, void *arg)
  * 动作来自 g_key_action（键盘线程写入），这里取出后分发到具体功能。 */
 static void key_control_cb(evutil_socket_t fd, short what, void *arg)
 {
-    int act = (int)InterlockedExchange(&g_key_action, 0);
+    int act = (int)atomic_exchange(&g_key_action, 0);
 
     switch (act) {
     case 's': case 'S':
@@ -716,16 +787,16 @@ static void key_control_cb(evutil_socket_t fd, short what, void *arg)
         }
         if (!g_save_dir[0])
             init_save_dir();   /* 首次开启保存时才创建目录，纯演示不产生目录/文件 */
-        InterlockedExchange(&g_saving, 1);
+        atomic_exchange(&g_saving, 1);
         printf("[client] 开始保存图片（每 %d 帧存一张 BMP）\n", g_save_every);
         break;
     case 'e': case 'E':
-        InterlockedExchange(&g_saving, 0);
+        atomic_exchange(&g_saving, 0);
         printf("[client] 停止保存图片（演示继续）\n");
         break;
     case 'x': case 'X':
         printf("[client] 退出\n");
-        InterlockedExchange(&g_running, 0);
+        atomic_exchange(&g_running, 0);
         event_base_loopbreak(g_base);
         break;
     default:
@@ -737,16 +808,24 @@ static void key_control_cb(evutil_socket_t fd, short what, void *arg)
  * 所以单独开一个线程读控制台。每按一键：
  *   写 g_key_action -> event_active() 主动唤醒主循环中的 g_key_event。
  * event_active 是跨线程安全的，即使主循环正阻塞在别的事件上也会被唤醒。 */
+#ifdef _WIN32
 static DWORD WINAPI stdin_thread(LPVOID arg)
+#else
+static void *stdin_thread(void *arg)
+#endif
 {
     int ch;
     while (g_running && (ch = getchar()) != EOF) {
         if (ch == '\r' || ch == '\n')
             continue;
-        InterlockedExchange(&g_key_action, ch);
+        atomic_exchange(&g_key_action, ch);
         event_active(g_key_event, EV_READ, 0);
     }
+#ifdef _WIN32
     return 0;
+#else
+    return NULL;
+#endif
 }
 
 /* 创建本 client 专属的图片保存目录：frames_时间_PID。
@@ -754,8 +833,9 @@ static DWORD WINAPI stdin_thread(LPVOID arg)
  * 每个进程各存各的目录，图片不会混到一起。 */
 static void init_save_dir(void)
 {
-    SYSTEMTIME st;
     char dir[64];
+#ifdef _WIN32
+    SYSTEMTIME st;
 
     GetLocalTime(&st);
     snprintf(dir, sizeof(dir), "frames_%04u%02u%02u_%02u%02u%02u_%u",
@@ -766,17 +846,33 @@ static void init_save_dir(void)
     if (CreateDirectoryA(dir, NULL) ||
         GetLastError() == ERROR_ALREADY_EXISTS) {
         snprintf(g_save_dir, sizeof(g_save_dir), "%s", dir);
-        printf("保存目录 : %s\\\n", g_save_dir);
+        printf("保存目录 : %s/\n", g_save_dir);
     } else {
         printf("保存目录 : 创建失败（错误码 %lu），退回当前目录\n",
                (unsigned long)GetLastError());
     }
+#else
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    snprintf(dir, sizeof(dir), "frames_%04d%02d%02d_%02d%02d%02d_%d",
+             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)getpid());
+    if (mkdir(dir, 0755) == 0 || errno == EEXIST) {
+        snprintf(g_save_dir, sizeof(g_save_dir), "%s", dir);
+        printf("保存目录 : %s/\n", g_save_dir);
+    } else {
+        printf("保存目录 : 创建失败（错误码 %d），退回当前目录\n", errno);
+    }
+#endif
 }
 
 /* ---------------- 主流程 ---------------- */
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
     WSADATA wsa;
+#endif
     int i;
 
     /* 参数：client [服务器IP] [端口] [-s]
@@ -790,13 +886,17 @@ int main(int argc, char **argv)
             g_server_port = atoi(argv[i]);
     }
 
+#ifdef _WIN32
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         printf("WSAStartup 失败\n");
         return 1;
     }
     SetConsoleOutputCP(CP_UTF8);
-    setvbuf(stdout, NULL, _IONBF, 0);   /* 重定向时也实时输出日志 */
     evthread_use_windows_threads();   /* libevent 内部锁使用 Windows 线程原语 */
+#else
+    evthread_use_pthreads();          /* libevent 内部锁使用 pthread */
+#endif
+    setvbuf(stdout, NULL, _IONBF, 0);   /* 重定向时也实时输出日志 */
 
     g_base = event_base_new();
     if (!g_base) {
@@ -812,18 +912,27 @@ int main(int argc, char **argv)
     g_key_event = event_new(g_base, -1, 0, key_control_cb, NULL);
     g_ui_timer = event_new(g_base, -1, EV_PERSIST, ui_timer_cb, NULL);
 
+#ifdef _WIN32
     CreateThread(NULL, 0, stdin_thread, NULL, 0, NULL);
+#else
+    {
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, stdin_thread, NULL) == 0)
+            pthread_detach(tid);
+    }
+#endif
 
-    /* 实时预览窗口 + 10ms UI 消息泵 */
+    /* 实时预览窗口：Windows 有 GDI 窗口；Linux 无图形界面（仅存图）。
+     * ui_window_create 在 Linux 恒返回 -1，走 else 分支，主流程不变。 */
     if (ui_window_create() == 0) {
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 10000;
         event_add(g_ui_timer, &tv);
-        g_fps_start = GetTickCount();
+        g_fps_start = now_ms();
         printf("预览窗口 : 已打开，实时显示收到的图像（窗口内按 ESC 退出）\n");
     } else {
-        printf("预览窗口 : 创建失败（仅存图，无实时显示）\n");
+        printf("预览窗口 : 未打开，当前仅存图模式（Linux 下为正常状态）\n");
     }
 
     printf("=============================================\n");
@@ -850,6 +959,7 @@ int main(int argc, char **argv)
     event_free(g_key_event);
     if (g_ui_timer)
         event_free(g_ui_timer);
+#ifdef _WIN32
     if (g_wnd)
         DestroyWindow(g_wnd);
     if (g_dib) {
@@ -858,9 +968,12 @@ int main(int argc, char **argv)
     }
     if (g_mem_dc)
         DeleteDC(g_mem_dc);
+#endif
     event_base_free(g_base);
     if (g_payload)
         free(g_payload);
+#ifdef _WIN32
     WSACleanup();
+#endif
     return 0;
 }

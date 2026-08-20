@@ -1,4 +1,9 @@
 ******至日落******
+server和client都可以在win也可以在Ubuntu
+
+
+cd /mnt/hgfs/Share/libevent
+任务：
 给出server端和PC端的代码，要求使用libevent做tcp网络传输图像，并实现短线重连，server支持最多10个客户端连接。
 
 1，server端：
