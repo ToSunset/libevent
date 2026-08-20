@@ -92,6 +92,7 @@ static struct event      *g_frame_ev = NULL;        /* 20ms 周期定时器事�
 static int                g_gen_tick = 0;           /* 帧计数（驱动动画位置） */
 static atomic_int          g_gen_interval_ms = IMG_GEN_INTERVAL_MS; /* 浏览器可调帧间隔 */
 static int                 g_cur_gen_interval_ms = IMG_GEN_INTERVAL_MS; /* 当前生效间隔 */
+static atomic_int          g_web_running = 1;    /* 图像源运行开关：1=生成中 0=暂停（全局冻结） */
 
 /* ---------------- 全局：客户端管理 ---------------- */
 typedef struct client_s client_t;
@@ -298,6 +299,18 @@ static void ctrl_read_cb(struct bufferevent *bev, void *arg)
                 break;
             case CTL_STOP_IMAGE:
                 handle_stop_image(c);
+                break;
+            case CTL_PAUSE_SOURCE:
+                /* 暂停图像源（全局冻结）：只改标志，不回包 */
+                atomic_store(&g_web_running, 0);
+                printf("[server] 客户端 %lld 暂停图像源（全局冻结）\n",
+                       (long long)c->fd);
+                break;
+            case CTL_RESUME_SOURCE:
+                /* 恢复图像源：只改标志，不回包 */
+                atomic_store(&g_web_running, 1);
+                printf("[server] 客户端 %lld 恢复图像源\n",
+                       (long long)c->fd);
                 break;
             case CTL_CTRL_DEV:
                 /* 设备控制暂未实现：应答"未支持" */
@@ -547,6 +560,9 @@ static void on_frame_timer(evutil_socket_t fd, short what, void *arg)
         event_del(g_frame_ev);
         event_add(g_frame_ev, &tv);
     }
+    /* 暂停时冻结图像源：不生成、不推进 g_gen_tick，恢复后从原位置继续 */
+    if (!atomic_load(&g_web_running))
+        return;
     gen_one_frame();
 }
 
@@ -599,7 +615,6 @@ static uint8_t           *g_web_frozen = NULL;   /* 暂停时冻结的 PNG 帧 *
 static size_t             g_web_frozen_len = 0;
 static size_t             g_web_frozen_cap = 0;
 static uint32_t           g_web_frozen_seq = 0;
-static atomic_int         g_web_running = 1;     /* 浏览器出图开关 */
 static atomic_int         g_web_heartbeat = 0;   /* 心跳计数 */
 static volatile sig_atomic_t g_web_run = 1;      /* web 线程退出标志 */
 static pthread_t          g_web_thread = 0;
