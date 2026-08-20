@@ -1,7 +1,15 @@
-个人练手项目
-libeventServer‑TcpImageTransfer
+个人练手项目，如果帮助到你的话请点一个小心心，是对我的鼓励。
+#This is a personal practice project. If you find it helpful, please give it a star, it means a lot to me.
+# libeventServer‑TcpImageTransfer
 基于 libevent 的跨平台 TCP 图像传输服务，实现服务端图像生成、多客户端接入、心跳保活、断线自动重连功能。服务端最多支持 10 个客户端同时连接，传输 640×480 8bit 灰度图像。
+
 项目概述
+## Project Overview
 本项目分为服务端 (server) 与 PC 客户端 (client)，自定义 16 字节二进制协议头，解决 TCP 粘包半包问题。
+This project consists of a server and a PC‑side client. A custom 16‑byte binary protocol header is designed to resolve TCP sticky packets and partial packet issues.
+
 Server：后台线程定时生成灰度测试图像，条件变量广播新帧信号；每个客户端分配独立控制线程与图像发送线程，处理心跳、请求图像、停止图像、设备控制等指令。
+**Server**: Background threads periodically generate grayscale test images, and broadcast new‑frame signals via condition variables. Each client is assigned an independent control thread and an image sending thread to handle commands including heartbeat, image request, image transmission stop, and device control.
+
 Client：TCP 连接服务端，3 秒周期发送心跳检测链路；支持请求 / 停止图像接收；网络异常、读超时自动断线重连；可保存原始灰度图像文件。
+**Client**: Establishes TCP connection to the server, and sends heartbeat packets every 3 seconds for link detection. It supports requesting / stopping image reception. Automatic disconnection and reconnection will be triggered on network exceptions or read timeout. Raw grayscale image files can be saved locally.
