@@ -12,6 +12,9 @@
   #frame { border:1px solid #444; display:block; }
   #stats { margin-top:10px; color:#9cf; }
   .kbd { margin-top:8px; color:#f90; font-size:13px; }
+  .bar label { color:#9cf; font-size:13px; }
+  .bar input[type=number] { width:64px; background:#222; color:#eee; border:1px solid #666; padding:2px 4px; }
+  #msg { margin-top:6px; color:#7f7; font-size:13px; min-height:16px; }
 </style>
 </head>
 <body>
@@ -26,15 +29,22 @@
   <button onclick="setFps(200)">200ms</button>
   <button onclick="closeMonitor()">关闭监控 (x)</button>
   <button onclick="openMonitor()">打开监控 (o)</button>
+  <label>宽 <input id="inp_w" type="number" min="160" max="1920" value="640"></label>
+  <label>高 <input id="inp_h" type="number" min="120" max="1080" value="480"></label>
+  <button onclick="applyDisplay()">应用尺寸</button>
 </div>
 <img id="frame" width="640" height="480" alt="实时图像">
 <div id="stats">连接中...</div>
-<div class="kbd">按键：s 开始 / q 暂停 / o 打开监控 / x 关闭监控 / h 心跳 / 1-4 帧率(20/50/100/200ms)</div>
+<div id="msg"></div>
+<div class="kbd">按键：s 开始 / q 暂停 / o 打开监控 / x 关闭监控 / h 心跳 / 1-4 帧率(20/50/100/200ms)；宽高输入框只改本页显示尺寸</div>
 
 <script>
 let playing = true;   // 本页是否在拉取图像
 let busy = false;     // 防止上一次请求未完成时重复请求
 let url = null;       // 当前图像 blob URL
+let dispW = 640, dispH = 480;   // 服务器保存的浏览器显示尺寸
+let dispLoaded = false;         // 是否已从服务器同步过一次输入框
+const MIN_W = 160, MAX_W = 1920, MIN_H = 120, MAX_H = 1080;
 
 async function refresh() {
   if (!playing || busy) return;
@@ -54,6 +64,15 @@ async function stats() {
   try {
     const r = await fetch('/api/stats');
     const s = await r.json();
+    if (s.disp_w && s.disp_h) {
+      dispW = s.disp_w; dispH = s.disp_h;
+      applyImgSize();
+      if (!dispLoaded) {   // 只在首次同步输入框，避免打断用户输入
+        document.getElementById('inp_w').value = dispW;
+        document.getElementById('inp_h').value = dispH;
+        dispLoaded = true;
+      }
+    }
     document.getElementById('stats').textContent =
       '帧号 ' + s.seq +
       ' | C客户端 ' + s.clients +
@@ -61,7 +80,8 @@ async function stats() {
       ' | 间隔 ' + s.interval_ms + 'ms' +
       ' | 服务器 ' + s.fps + 'fps' +
       ' | 心跳 ' + s.heartbeat +
-      ' | 监控:' + (playing ? '开' : '关');
+      ' | 监控:' + (playing ? '开' : '关') +
+      ' | 显示 ' + dispW + 'x' + dispH;
   } catch (e) { document.getElementById('stats').textContent = '连接失败，重试中...'; }
 }
 
@@ -86,6 +106,47 @@ async function setFps(ms) {
   await fetch('/api/fps', { method: 'POST', body: String(ms) });
   stats();
 }
+
+function showMsg(t) {
+  const el = document.getElementById('msg');
+  el.textContent = t;
+  clearTimeout(showMsg._t);
+  showMsg._t = setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+function applyImgSize() {
+  document.getElementById('frame').style.width = dispW + 'px';
+  document.getElementById('frame').style.height = dispH + 'px';
+}
+
+async function applyDisplay() {
+  let w = parseInt(document.getElementById('inp_w').value, 10);
+  let h = parseInt(document.getElementById('inp_h').value, 10);
+  if (isNaN(w) || isNaN(h)) { showMsg('请输入数字宽高'); return; }
+  w = Math.min(Math.max(w, MIN_W), MAX_W);
+  h = Math.min(Math.max(h, MIN_H), MAX_H);
+  document.getElementById('inp_w').value = w;
+  document.getElementById('inp_h').value = h;
+  try {
+    const r = await fetch('/api/display', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ w, h })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      dispW = j.w; dispH = j.h;
+      applyImgSize();
+      showMsg('显示尺寸已设为 ' + dispW + 'x' + dispH);
+    } else {
+      showMsg('尺寸设置失败：' + (j.error || '未知错误'));
+    }
+  } catch (e) {
+    showMsg('服务器无响应，尺寸未应用');
+  }
+}
+
+
 
 function closeMonitor() {
   playing = false;

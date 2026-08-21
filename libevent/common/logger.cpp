@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "logger.h"
+#include "logger.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -10,26 +10,14 @@
 
 namespace cam {
 
-static const char* levelAbbr(LogLevel lv)
+static const char* levelName(LogLevel lv)
 {
     switch (lv) {
-        case LogLevel::kDebug: return "DEBUG";
-        case LogLevel::kInfo:  return "INFO";
-        case LogLevel::kWarn:  return "WARN";
-        case LogLevel::kError: return "ERROR";
-        default:               return "?????";
-    }
-}
-
-const char* Logger::levelName(LogLevel lv)
-{
-    switch (lv) {
-        case LogLevel::kDebug: return "debug";
-        case LogLevel::kInfo:  return "info";
-        case LogLevel::kWarn:  return "warn";
-        case LogLevel::kError: return "error";
-        case LogLevel::kOff:   return "off";
-        default:               return "unknown";
+        case LogLevel::kDebug: return "DBG";
+        case LogLevel::kInfo:  return "INF";
+        case LogLevel::kWarn:  return "WRN";
+        case LogLevel::kError: return "ERR";
+        default:               return "???";
     }
 }
 
@@ -68,7 +56,7 @@ void Logger::log(LogLevel lv, const char* fmt, va_list args)
         std::fprintf(stdout, "[%s.%03d] ", stamp, static_cast<int>(ms.count()));
     }
 
-    std::fprintf(stdout, "[%-5s] ", levelAbbr(lv));
+    std::fprintf(stdout, "[%s] ", levelName(lv));
     std::vfprintf(stdout, fmt, args);
     std::fputc('\n', stdout);
     std::fflush(stdout);

@@ -1,17 +1,17 @@
-#include "image_source.h"
+#include "image_source.hpp"
 
 #include <chrono>
 #include <cstring>
 
 #include <event2/event.h>
 
-#include "../common/logger.h"
-#include "../common/protocol.h"
+#include "../common/logger.hpp"
+#include "../common/protocol.hpp"
 
 namespace cam {
 
 namespace {
-constexpr int kImgGenIntervalDefault = 20;   /* 与 protocol.h 的默认值一致 */
+constexpr int kImgGenIntervalDefault = 20;   /* 与 protocol.hpp 的默认值一致 */
 }
 
 ImageSource::ImageSource()
@@ -33,11 +33,8 @@ bool ImageSource::start()
     try {
         thread_ = std::thread(threadMain, this);
     } catch (...) {
-        LOG_ERROR("[IMG] 图像生成线程创建失败");
         return false;
     }
-    LOG_INFO("[IMG] 图像生成线程已启动：%dx%d 8bit 灰度，%dms/帧",
-             kImgWidth, kImgHeight, intervalMs_.load());
     return true;
 }
 
@@ -47,7 +44,6 @@ void ImageSource::stop()
     if (base_) event_base_loopbreak(base_);
     wakeAll();
     if (thread_.joinable()) thread_.join();
-    LOG_INFO("[IMG] 图像生成线程已停止");
 }
 
 void ImageSource::breakLoop()
@@ -111,13 +107,9 @@ void ImageSource::threadMain(void* arg)
     auto* self = static_cast<ImageSource*>(arg);
 
     self->base_ = event_base_new();
-    if (!self->base_) {
-        LOG_ERROR("[IMG] 图像线程事件循环初始化失败");
-        return;
-    }
+    if (!self->base_) return;
     self->frameEv_ = event_new(self->base_, -1, EV_PERSIST, onFrameTimer, self);
     if (!self->frameEv_) {
-        LOG_ERROR("[IMG] 图像线程定时器创建失败");
         event_base_free(self->base_);
         self->base_ = nullptr;
         return;
