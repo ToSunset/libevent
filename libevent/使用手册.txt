@@ -3,6 +3,20 @@ server和client都可以在win也可以在Ubuntu
 
 
 cd /mnt/hgfs/Share/libevent
+
+
+http://192.168.183.129:8080
+127.0.0.1：8080
+
+cd G:\Share\libevent\client\Release
+.\client.exe 192.168.183.129 9995
+
+s=开始/恢复     q=暂停（冻结图像源）
+          o=打开监控      x=关闭监控（隐藏窗口）
+          b=开始保存图片  e=停止保存
+          h=手动心跳      退出按 Ctrl+C
+
+
 任务：
 给出server端和PC端的代码，要求使用libevent做tcp网络传输图像，并实现短线重连，server支持最多10个客户端连接。
 
@@ -123,6 +137,18 @@ ST_IDLE 丢数据保护：read_cb 开头检查 ST_IDLE 时直接清空输入缓�
 GDI 预览：CreateDIBSection 拿到可直接写像素的内存，灰度展开成 24 位 RGB 后 BitBlt；窗口消息由 10ms 定时器泵，不用单独开 UI 线程
 每个 client 独立保存目录：frames_时间_PID，多个客户端各存各的
 
+
+1
+send_client()
+send_client()
+
+2握手
+
+3类
+
+4宽高
+
+4
 
 
 

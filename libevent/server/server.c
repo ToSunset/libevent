@@ -1,4 +1,4 @@
-/* server.c —— libevent 图像服务器（跨平台：Linux / Windows-MinGW）
+/* server.c —— libevent 图像服务器（跨平台：Linux / Windows）
  *
  * 【架构讲解】
  *   这是一个"一对多"的图像服务器：一台服务器同时向最多 10 个客户端推送
@@ -25,15 +25,16 @@
  *        libevent 内部线程安全。
  *
  * 【跨平台说明】
- *   本文件是纯 POSIX C，不依赖 Windows API（无 windows.h / winsock2.h）：
- *     - 线程/锁/条件变量：pthread（Linux 原生；Windows 用 MinGW 的 winpthreads）
+ *   线程/锁/条件变量统一走 common/thread_compat.h：
+ *     - Linux   : 内部映射到原生 pthread
+ *     - Windows : 内部映射到 SRWLock / CONDITION_VARIABLE / _beginthreadex
+ *                 （不再依赖 pthread.h，MSVC 可直接编译）
  *     - 原子操作：C11 <stdatomic.h>
  *     - 定时器：libevent 事件定时器（替代 Windows CreateWaitableTimer）
  *     - 网络：全部走 libevent 跨平台接口（evconnlistener / bufferevent）
  *   编译：
- *     Linux   : gcc server.c -o server -levent -lpthread
- *     Windows : MSYS2/MinGW-w64 下  gcc server.c -o server.exe -levent -lpthread
- *               （libevent 也要用 MinGW 版：pacman -S mingw-w64-x86_64-libevent）
+ *     Linux   : make（gcc server.c mongoose.c -levent -levent_pthreads -lpthread）
+ *     Windows : VS2022 打开 server.sln（/std:c11）；或 MSYS2/MinGW-w64 的 gcc
  *
  * 功能：
  *   1. 图像生成线程：每 20ms 生成一帧 640x480 8 位灰度测试图，广播 img_ready
@@ -53,15 +54,17 @@
 #include <stdint.h>
 #include <signal.h>
 #include <time.h>
-#include <pthread.h>
 #include <stdatomic.h>
 
 #ifdef _WIN32
-#include <winsock2.h>   /* 仅提供 struct sockaddr_in 等类型（MinGW 下不含 windows.h） */
+#include <winsock2.h>   /* 必须先于 windows.h 包含，避免 winsock 版本冲突 */
 #else
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #endif
+
+/* 跨平台线程层：Linux=pthread，Windows=SRWLock/条件变量（无 pthread 依赖） */
+#include "thread_compat.h"
 
 /* libevent 头文件：event_base（事件循环）、bufferevent（带缓冲的 socket
  * 封装）、listener（监听器）。libevent 本身跨平台，这套头在 Linux/Windows
@@ -81,12 +84,12 @@
  *   生成线程持锁写入并递增序号；各发送线程在锁上等条件变量，序号一变就
  *   把新帧拷走。用"帧序号"而不是"标志位"，可以精确判断"有没有新帧"，
  *   避免丢帧或重复处理。 */
-static pthread_mutex_t    g_img_lock;   /* 保护 g_img_buf / g_img_seq */
-static pthread_cond_t     g_img_cond;   /* img_ready 广播信号 */
+static mtx_t               g_img_lock;   /* 保护 g_img_buf / g_img_seq */
+static cnd_t               g_img_cond;   /* img_ready 广播信号 */
 static uint8_t            g_img_buf[IMG_DATA_LEN];  /* 最新一帧 */
 static uint32_t           g_img_seq = 0;            /* 帧序号 */
 static volatile sig_atomic_t g_running = 1;         /* Ctrl+C 置 0 退出 */
-static pthread_t          g_gen_thread = 0;         /* 图像生成线程 */
+static thrd_t             g_gen_thread = 0;         /* 图像生成线程 */
 static struct event_base *g_gen_base = NULL;        /* 生成线程的定时器事件循环 */
 static struct event      *g_frame_ev = NULL;        /* 20ms 周期定时器事件 */
 static int                g_gen_tick = 0;           /* 帧计数（驱动动画位置） */
@@ -96,7 +99,7 @@ static atomic_int          g_web_running = 1;    /* 图像源运行开关：1=�
 
 /* ---------------- 全局：客户端管理 ---------------- */
 typedef struct client_s client_t;
-static pthread_mutex_t g_clients_lock;
+static mtx_t           g_clients_lock;
 static client_t        *g_clients[MAX_CLIENTS];
 static atomic_int      g_client_count = 0;   /* 当前在线客户端数 */
 
@@ -106,10 +109,10 @@ struct client_s
     struct event_base  *base;     /* 本客户端专属事件循环（控制线程内创建/销毁） */
     struct bufferevent *bev;      /* 本客户端的收发封装 */
 
-    pthread_mutex_t send_lock;    /* 串行化本客户端的所有发送（头+数据不被打断） */
+    mtx_t send_lock;              /* 串行化本客户端的所有发送（头+数据不被打断） */
 
-    pthread_t ctrl_thread;        /* 控制线程 */
-    pthread_t send_thread;        /* 图像发送线程（未启动为 0） */
+    thrd_t ctrl_thread;           /* 控制线程 */
+    thrd_t send_thread;           /* 图像发送线程（未启动为 0） */
     atomic_int send_stop;         /* 停止发送线程标志 */
     uint32_t last_seq;            /* 发送线程已发送的最新帧序号 */
 
@@ -134,10 +137,10 @@ static void build_head(uint8_t *out, int32_t ctl, int32_t err, int32_t len)
  * 被同一客户端的其他发送插队，破坏协议帧的连续性。 */
 static void send_client(client_t *c, const void *data, int len)
 {
-    pthread_mutex_lock(&c->send_lock);
+    mtx_lock(&c->send_lock);
     if (c->bev)
         bufferevent_write(c->bev, data, len);
-    pthread_mutex_unlock(&c->send_lock);
+    mtx_unlock(&c->send_lock);
 }
 
 /* ---------------- 图像发送线程（每客户端一个） ----------------
@@ -145,7 +148,7 @@ static void send_client(client_t *c, const void *data, int len)
  *   等"新帧"条件变量 -> 有新帧就把最新一帧 memcpy 到私有缓冲
  *   -> 在锁外发送（16 字节头 + 图像数据）。
  * 关键设计：
- *   1) 条件变量必须配锁使用：pthread_cond_timedwait 在等待时自动释放锁、
+ *   1) 条件变量必须配锁使用：cnd_timedwait 在等待时自动释放锁、
  *      被唤醒后自动重新持锁，期间不会漏掉"新帧"信号；
  *   2) 只拷"最新一帧"而不是逐帧排队：客户端跟不上时自然跳帧，
  *      保证延迟最低；
@@ -162,35 +165,27 @@ static void *send_image_thread(void *arg)
         return (void *)1;
 
     while (g_running && !atomic_load(&c->send_stop)) {
-        pthread_mutex_lock(&g_img_lock);
+        mtx_lock(&g_img_lock);
 
-        /* 等待 img_ready 广播信号，超时 5 秒（pthread_cond_timedwait 用
-         * CLOCK_REALTIME 绝对时间，超时返回 ETIMEDOUT） */
+        /* 等待 img_ready 广播信号，超时 IMG_READY_TIMEOUT_MS 毫秒
+         * （cnd_timedwait 返回 1 表示超时） */
         while (g_running && !atomic_load(&c->send_stop) &&
                g_img_seq == c->last_seq) {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_sec  += IMG_READY_TIMEOUT_MS / 1000;
-            ts.tv_nsec += (long)(IMG_READY_TIMEOUT_MS % 1000) * 1000000L;
-            if (ts.tv_nsec >= 1000000000L) {
-                ts.tv_sec++;
-                ts.tv_nsec -= 1000000000L;
-            }
-            if (pthread_cond_timedwait(&g_img_cond, &g_img_lock, &ts) ==
-                ETIMEDOUT) {
+            if (cnd_timedwait(&g_img_cond, &g_img_lock,
+                              IMG_READY_TIMEOUT_MS) == 1) {
                 timed_out = 1;   /* 等待超时 */
                 break;
             }
         }
 
         if (!g_running || atomic_load(&c->send_stop)) {
-            pthread_mutex_unlock(&g_img_lock);
+            mtx_unlock(&g_img_lock);
             break;
         }
 
         if (timed_out && g_img_seq == c->last_seq) {
-            /* 5 秒内没有新图：发一个错误头，然后继续等 */
-            pthread_mutex_unlock(&g_img_lock);
+            /* 超时内没有新图：发一个错误头，然后继续等 */
+            mtx_unlock(&g_img_lock);
             timed_out = 0;
             build_head(hdr, CTL_IMG_DATA, ERR_IMG_TIMEOUT, 0);
             send_client(c, hdr, IMG_HEAD_LEN);
@@ -203,7 +198,7 @@ static void *send_image_thread(void *arg)
         /* 有新图：在锁内拷贝最新一帧（发送在锁外进行） */
         c->last_seq = g_img_seq;
         memcpy(frame, g_img_buf, IMG_DATA_LEN);
-        pthread_mutex_unlock(&g_img_lock);
+        mtx_unlock(&g_img_lock);
 
         /* 先发 16 字节数据头，再发 640x480 图像 */
         build_head(hdr, CTL_IMG_DATA, ERR_OK, IMG_DATA_LEN);
@@ -221,11 +216,18 @@ static void *send_image_thread(void *arg)
 static void handle_heartbeat(client_t *c)
 {
     uint8_t buf[IMG_HEAD_LEN + HEARTBEAT_DATA_LEN];
-    struct timespec ts;
     int32_t val;
 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    val = (int32_t)((ts.tv_sec * 1000 + ts.tv_nsec / 1000000) & 0x7FFFFFFF);
+#ifdef _WIN32
+    /* Windows：GetTickCount64 单调毫秒时间戳 */
+    val = (int32_t)(GetTickCount64() & 0x7FFFFFFF);
+#else
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        val = (int32_t)((ts.tv_sec * 1000 + ts.tv_nsec / 1000000) & 0x7FFFFFFF);
+    }
+#endif
 
     build_head(buf, CTL_HEARTBEAT_RESP, ERR_OK, HEARTBEAT_DATA_LEN);
     memcpy(buf + IMG_HEAD_LEN, &val, HEARTBEAT_DATA_LEN);
@@ -243,7 +245,7 @@ static void handle_req_image(client_t *c)
         return;
     }
     atomic_store(&c->send_stop, 0);
-    pthread_create(&c->send_thread, NULL, send_image_thread, c);
+    thrd_create(&c->send_thread, send_image_thread, c);
     printf("[server] 客户端 %lld 开始传输图像\n", (long long)c->fd);
 }
 
@@ -258,11 +260,11 @@ static void handle_stop_image(client_t *c)
     }
     atomic_store(&c->send_stop, 1);
     /* 唤醒可能正在等待 img_ready 的发送线程（其他客户端会空醒一次，无害） */
-    pthread_mutex_lock(&g_img_lock);
-    pthread_cond_broadcast(&g_img_cond);
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_lock(&g_img_lock);
+    cnd_broadcast(&g_img_cond);
+    mtx_unlock(&g_img_lock);
 
-    pthread_join(c->send_thread, NULL);
+    thrd_join(c->send_thread, NULL);
     c->send_thread = 0;
     printf("[server] 客户端 %lld 停止传输图像\n", (long long)c->fd);
 }
@@ -380,21 +382,21 @@ static void *ctrl_thread_main(void *arg)
      * 清理顺序很重要：先通知发送线程停止并等它退出，再释放 bufferevent，
      * 避免发送线程还在使用已被释放的资源；最后摘除全局表并减计数。 */
     atomic_store(&c->send_stop, 1);
-    pthread_mutex_lock(&g_img_lock);
-    pthread_cond_broadcast(&g_img_cond);
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_lock(&g_img_lock);
+    cnd_broadcast(&g_img_cond);
+    mtx_unlock(&g_img_lock);
 
     if (c->send_thread) {
-        pthread_join(c->send_thread, NULL);
+        thrd_join(c->send_thread, NULL);
         c->send_thread = 0;
     }
 
-    pthread_mutex_lock(&g_clients_lock);
+    mtx_lock(&g_clients_lock);
     if (c->slot >= 0) {
         g_clients[c->slot] = NULL;
         c->slot = -1;
     }
-    pthread_mutex_unlock(&g_clients_lock);
+    mtx_unlock(&g_clients_lock);
     atomic_fetch_add(&g_client_count, -1);
     printf("[server] 客户端 %lld 已清理，当前 %d/%d\n",
            (long long)c->fd, atomic_load(&g_client_count), MAX_CLIENTS);
@@ -403,7 +405,7 @@ static void *ctrl_thread_main(void *arg)
         bufferevent_free(c->bev);
     if (c->base)
         event_base_free(c->base);
-    pthread_mutex_destroy(&c->send_lock);
+    mtx_destroy(&c->send_lock);
     free(c);
     return 0;
 
@@ -413,13 +415,13 @@ fail:
         bufferevent_free(c->bev);
     if (c->base)
         event_base_free(c->base);
-    pthread_mutex_destroy(&c->send_lock);
-    pthread_mutex_lock(&g_clients_lock);
+    mtx_destroy(&c->send_lock);
+    mtx_lock(&g_clients_lock);
     if (c->slot >= 0) {
         g_clients[c->slot] = NULL;
         c->slot = -1;
     }
-    pthread_mutex_unlock(&g_clients_lock);
+    mtx_unlock(&g_clients_lock);
     atomic_fetch_add(&g_client_count, -1);
     free(c);
     return (void *)1;
@@ -512,7 +514,7 @@ static void gen_one_frame(void)
     }
     tick = ++g_gen_tick;
 
-    pthread_mutex_lock(&g_img_lock);
+    mtx_lock(&g_img_lock);
     memcpy(g_img_buf, bg, sizeof(bg));
     /* 动态元素：1.全屏宽亮带上下扫动  2.移动白色方块  3.帧号 */
     /* 1. 全屏宽亮带上下扫动（24 像素高，平滑往返） */
@@ -540,9 +542,9 @@ static void gen_one_frame(void)
     draw_frame_number(g_img_buf, (int)(seq + 1));
 
     g_img_seq = ++seq;
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_unlock(&g_img_lock);
 
-    pthread_cond_broadcast(&g_img_cond);   /* 广播 img_ready */
+    cnd_broadcast(&g_img_cond);   /* 广播 img_ready */
 }
 
 /* 20ms 周期定时器回调（EV_PERSIST，自动重复触发） */
@@ -617,7 +619,7 @@ static size_t             g_web_frozen_cap = 0;
 static uint32_t           g_web_frozen_seq = 0;
 static atomic_int         g_web_heartbeat = 0;   /* 心跳计数 */
 static volatile sig_atomic_t g_web_run = 1;      /* web 线程退出标志 */
-static pthread_t          g_web_thread = 0;
+static thrd_t             g_web_thread = 0;
 static struct mg_mgr      g_web_mgr;
 static char              *g_index_html = NULL;
 
@@ -760,24 +762,24 @@ static size_t gray_to_png(const uint8_t *gray, size_t w, size_t h,
 /* 拷贝最新一帧灰度图：成功返回 0，cap 不够返回 -1 */
 static int server_get_latest_frame(uint8_t *out, size_t cap, uint32_t *seq)
 {
-    pthread_mutex_lock(&g_img_lock);
+    mtx_lock(&g_img_lock);
     if (cap >= IMG_DATA_LEN) {
         memcpy(out, g_img_buf, IMG_DATA_LEN);
         if (seq)
             *seq = g_img_seq;
-        pthread_mutex_unlock(&g_img_lock);
+        mtx_unlock(&g_img_lock);
         return 0;
     }
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_unlock(&g_img_lock);
     return -1;
 }
 
 static uint32_t server_get_frame_seq(void)
 {
     uint32_t s;
-    pthread_mutex_lock(&g_img_lock);
+    mtx_lock(&g_img_lock);
     s = g_img_seq;
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_unlock(&g_img_lock);
     return s;
 }
 
@@ -1000,7 +1002,7 @@ static int web_server_start(void)
         return -1;
     }
     g_web_run = 1;
-    if (pthread_create(&g_web_thread, NULL, web_thread_main, NULL) != 0) {
+    if (thrd_create(&g_web_thread, web_thread_main, NULL) != 0) {
         mg_mgr_free(&g_web_mgr);
         return -1;
     }
@@ -1013,7 +1015,7 @@ static void web_server_stop(void)
     if (!g_web_thread)
         return;
     g_web_run = 0;
-    pthread_join(g_web_thread, NULL);
+    thrd_join(g_web_thread, NULL);
     g_web_thread = 0;
     mg_mgr_free(&g_web_mgr);
     if (g_web_frozen) {
@@ -1060,9 +1062,9 @@ static void on_accept(struct evconnlistener *lst, evutil_socket_t fd,
     }
     c->fd = fd;
     c->slot = -1;
-    pthread_mutex_init(&c->send_lock, NULL);
+    mtx_init(&c->send_lock);
 
-    pthread_mutex_lock(&g_clients_lock);
+    mtx_lock(&g_clients_lock);
     for (i = 0; i < MAX_CLIENTS; i++) {
         if (g_clients[i] == NULL) {
             g_clients[i] = c;
@@ -1070,11 +1072,11 @@ static void on_accept(struct evconnlistener *lst, evutil_socket_t fd,
             break;
         }
     }
-    pthread_mutex_unlock(&g_clients_lock);
+    mtx_unlock(&g_clients_lock);
 
     if (c->slot < 0) {   /* 表满（理论上不会发生） */
         atomic_fetch_add(&g_client_count, -1);
-        pthread_mutex_destroy(&c->send_lock);
+        mtx_destroy(&c->send_lock);
         evutil_closesocket(fd);
         free(c);
         return;
@@ -1083,7 +1085,9 @@ static void on_accept(struct evconnlistener *lst, evutil_socket_t fd,
     printf("[server] 接受客户端 %lld，当前 %d/%d\n",
            (long long)fd, (int)n, MAX_CLIENTS);
 
-    pthread_create(&c->ctrl_thread, NULL, ctrl_thread_main, c);
+    /* 控制线程不 join：创建后立即分离，线程结束自动回收资源 */
+    thrd_create(&c->ctrl_thread, ctrl_thread_main, c);
+    thrd_detach(c->ctrl_thread);
 }
 
 /* Ctrl+C / SIGTERM 统一走这里：置停止标志并打断两个事件循环 */
@@ -1105,6 +1109,20 @@ int main(void)
 
     setvbuf(stdout, NULL, _IONBF, 0);   /* 重定向时也实时输出日志 */
 
+#ifdef _WIN32
+    /* Windows 控制台默认 GBK：把输出代码页切到 UTF-8，避免中文乱码 */
+    SetConsoleOutputCP(CP_UTF8);
+
+    /* Windows 必须先初始化 Winsock，否则 libevent 事件循环创建失败 */
+    {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            printf("WSAStartup 失败\n");
+            return 1;
+        }
+    }
+#endif
+
     /* 让 libevent 内部线程安全：Windows 用 Windows 线程原语，
      * Linux 用 pthread（这是源码里唯一的平台分支） */
 #ifdef _WIN32
@@ -1113,9 +1131,9 @@ int main(void)
     evthread_use_pthreads();
 #endif
 
-    pthread_mutex_init(&g_img_lock, NULL);
-    pthread_cond_init(&g_img_cond, NULL);
-    pthread_mutex_init(&g_clients_lock, NULL);
+    mtx_init(&g_img_lock);
+    cnd_init(&g_img_cond);
+    mtx_init(&g_clients_lock);
     atomic_init(&g_client_count, 0);
     for (i = 0; i < MAX_CLIENTS; i++)
         g_clients[i] = NULL;
@@ -1142,7 +1160,7 @@ int main(void)
     }
 
     /* 启动图像生成线程（内部用 libevent 定时器，20ms/帧） */
-    pthread_create(&g_gen_thread, NULL, gen_image_thread, NULL);
+    thrd_create(&g_gen_thread, gen_image_thread, NULL);
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
 
@@ -1168,21 +1186,24 @@ int main(void)
      * 是独立线程，进程退出时随进程一起结束，无需在这里逐个等待。 */
     printf("\n服务器退出中...\n");
     g_running = 0;
-    pthread_mutex_lock(&g_img_lock);
-    pthread_cond_broadcast(&g_img_cond);
-    pthread_mutex_unlock(&g_img_lock);
+    mtx_lock(&g_img_lock);
+    cnd_broadcast(&g_img_cond);
+    mtx_unlock(&g_img_lock);
     if (g_gen_base)
         event_base_loopbreak(g_gen_base);
     if (g_gen_thread)
-        pthread_join(g_gen_thread, NULL);
+        thrd_join(g_gen_thread, NULL);
     web_server_stop();
     if (g_listener)
         evconnlistener_free(g_listener);
     event_base_free(g_base);
 
-    pthread_cond_destroy(&g_img_cond);
-    pthread_mutex_destroy(&g_img_lock);
-    pthread_mutex_destroy(&g_clients_lock);
+    cnd_destroy(&g_img_cond);
+    mtx_destroy(&g_img_lock);
+    mtx_destroy(&g_clients_lock);
     printf("服务器已退出\n");
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }
