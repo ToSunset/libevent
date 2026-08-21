@@ -1,181 +1,912 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<title>libevent 图像服务器 · 浏览器界面</title>
-<style>
-  body { background:#111; color:#eee; font-family:Consolas,Menlo,monospace; margin:16px; }
-  h1 { font-size:18px; margin:4px 0 10px; }
-  .bar { margin-bottom:10px; }
-  .bar button { background:#333; color:#eee; border:1px solid #666; padding:4px 12px; margin-right:6px; cursor:pointer; }
-  .bar button:hover { background:#555; }
-  #frame { border:1px solid #444; display:block; }
-  #stats { margin-top:10px; color:#9cf; }
-  .kbd { margin-top:8px; color:#f90; font-size:13px; }
-  .bar label { color:#9cf; font-size:13px; }
-  .bar input[type=number] { width:64px; background:#222; color:#eee; border:1px solid #666; padding:2px 4px; }
-  #msg { margin-top:6px; color:#7f7; font-size:13px; min-height:16px; }
-</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>libevent 图像服务器 · 控制台</title>
+    <style>
+        /* ===== 全局重置 & 亮色主题 ===== */
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            min-height: 100vh;
+            background: #f3f6fc;
+            background-image: radial-gradient(circle at 10% 30%, rgba(180, 210, 255, 0.3) 0%, transparent 60%),
+                radial-gradient(circle at 90% 70%, rgba(200, 180, 255, 0.2) 0%, transparent 50%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #1a1e2c;
+        }
+
+        /* ===== 主卡片 — 更宽 ===== */
+        .dashboard {
+            max-width: 1400px;  /* 从1100px增大到1400px */
+            width: 100%;
+            background: rgba(255, 255, 255, 0.82);
+            backdrop-filter: blur(16px) saturate(1.2);
+            -webkit-backdrop-filter: blur(16px) saturate(1.2);
+            border-radius: 40px;
+            padding: 32px 36px 40px;
+            box-shadow: 0 20px 60px rgba(0, 20, 40, 0.12), 0 0 0 1px rgba(255, 255, 255, 0.6);
+            transition: all 0.25s ease;
+        }
+
+        /* ===== 头部 ===== */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo-icon {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #4a7cf7, #7c6cff);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 700;
+            color: #fff;
+            box-shadow: 0 8px 18px rgba(74, 124, 247, 0.25);
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            color: #0f1a2e;
+        }
+
+        .header h1 small {
+            font-weight: 400;
+            font-size: 14px;
+            color: #5b6f8c;
+            margin-left: 6px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.03);
+            padding: 6px 16px 6px 12px;
+            border-radius: 40px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #1f2a44;
+            border: 1px solid rgba(0, 0, 0, 0.06);
+            backdrop-filter: blur(4px);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+        }
+
+        .status-badge .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #22b455;
+            box-shadow: 0 0 10px rgba(34, 180, 85, 0.3);
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+
+        .status-badge .dot.paused {
+            background: #e6a700;
+            box-shadow: 0 0 10px rgba(230, 167, 0, 0.3);
+        }
+
+        .status-badge .dot.off {
+            background: #e05353;
+            box-shadow: 0 0 10px rgba(224, 83, 83, 0.25);
+        }
+
+        /* ===== 主体布局 — 右侧面板收窄 ===== */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 280px;  /* 右侧从340px减小到280px */
+            gap: 28px;
+            margin-top: 6px;
+        }
+
+        /* ===== 左栏 — 图像区域 (放大) ===== */
+        .frame-wrapper {
+            position: relative;
+            border-radius: 24px;
+            overflow: auto;
+            background: #ffffff;
+            box-shadow: 0 8px 30px rgba(0, 20, 40, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+            aspect-ratio: 4 / 3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 400px;  /* 保证最小高度，让画面更显眼 */
+        }
+
+        .frame-wrapper img {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            transition: opacity 0.2s ease;
+            background: #fafcff;
+        }
+
+        .frame-overlay {
+            position: absolute;
+            bottom: 14px;
+            right: 16px;
+            background: rgba(255, 255, 255, 0.75);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            padding: 4px 14px;
+            border-radius: 40px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #1f2a44;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            pointer-events: none;
+            user-select: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        .frame-placeholder {
+            color: #b0c4e0;
+            font-size: 15px;
+            font-weight: 400;
+            letter-spacing: 0.5px;
+        }
+
+        /* ===== 右栏 — 控制面板 (调整内边距, 保持紧凑) ===== */
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;  /* 稍微减小间距 */
+        }
+
+        .panel-section {
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+            border-radius: 20px;
+            padding: 16px 18px 18px;  /* 减小内边距 */
+            border: 1px solid rgba(255, 255, 255, 0.7);
+            box-shadow: 0 2px 12px rgba(0, 20, 40, 0.04);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .panel-section:hover {
+            border-color: rgba(74, 124, 247, 0.15);
+            box-shadow: 0 4px 20px rgba(0, 20, 40, 0.06);
+        }
+
+        .section-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: #7a8aa3;
+            margin-bottom: 12px;  /* 减小标题下边距 */
+            font-weight: 600;
+        }
+
+        /* ===== 按钮组 ===== */
+        .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;  /* 减小按钮间距 */
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 7px 14px;  /* 稍微减小内边距 */
+            border-radius: 40px;
+            border: none;
+            font-size: 12px;  /* 字体稍小 */
+            font-weight: 500;
+            font-family: inherit;
+            color: #1f2a44;
+            background: rgba(0, 0, 0, 0.04);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(4px);
+            border: 1px solid transparent;
+            flex: 0 0 auto;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+        }
+
+        .btn:hover {
+            background: rgba(0, 0, 0, 0.07);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(0, 20, 40, 0.08);
+        }
+
+        .btn:active {
+            transform: translateY(0px) scale(0.97);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #4a7cf7, #6c5cf7);
+            color: #fff;
+            box-shadow: 0 4px 14px rgba(74, 124, 247, 0.25);
+            border-color: transparent;
+        }
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #5a8cff, #7c6cff);
+            box-shadow: 0 6px 22px rgba(74, 124, 247, 0.35);
+            color: #fff;
+        }
+
+        .btn-danger {
+            background: rgba(224, 83, 83, 0.10);
+            color: #b13e3e;
+        }
+        .btn-danger:hover {
+            background: rgba(224, 83, 83, 0.18);
+        }
+
+        .btn-success {
+            background: rgba(34, 180, 85, 0.10);
+            color: #1e7a44;
+        }
+        .btn-success:hover {
+            background: rgba(34, 180, 85, 0.18);
+        }
+
+        .btn-warning {
+            background: rgba(230, 167, 0, 0.10);
+            color: #a87a00;
+        }
+        .btn-warning:hover {
+            background: rgba(230, 167, 0, 0.18);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        .btn-ghost:hover {
+            background: rgba(0, 0, 0, 0.03);
+            border-color: rgba(0, 0, 0, 0.15);
+        }
+
+        .btn-sm {
+            padding: 5px 12px;
+            font-size: 12px;
+        }
+
+        .btn-icon {
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        /* ===== 帧率快捷按钮 ===== */
+        .fps-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 5px;
+        }
+        .fps-grid .btn {
+            flex: 1;
+            text-align: center;
+            padding: 5px 4px;
+            font-size: 11px;
+            font-weight: 500;
+            background: rgba(0, 0, 0, 0.03);
+        }
+        .fps-grid .btn:hover {
+            background: rgba(0, 0, 0, 0.07);
+        }
+        .fps-grid .btn.active {
+            background: rgba(74, 124, 247, 0.12);
+            border-color: rgba(74, 124, 247, 0.3);
+            color: #2a4aaf;
+            font-weight: 600;
+        }
+
+        /* ===== 尺寸控制 ===== */
+        .size-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .size-row label {
+            font-size: 12px;
+            color: #4a5a74;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .size-row input[type="number"] {
+            width: 60px;
+            background: #ffffff;
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            border-radius: 40px;
+            padding: 5px 8px;
+            font-size: 12px;
+            font-family: inherit;
+            color: #1a1e2c;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.02);
+        }
+
+        .size-row input[type="number"]:focus {
+            border-color: rgba(74, 124, 247, 0.4);
+            box-shadow: 0 0 0 3px rgba(74, 124, 247, 0.1);
+        }
+
+        .size-row input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+        }
+        .size-row input[type="number"] {
+            -moz-appearance: textfield;
+        }
+
+        .size-row .btn-apply {
+            padding: 5px 14px;
+            font-size: 12px;
+        }
+
+        /* ===== 统计信息 ===== */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px 12px;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .stats-grid .stat-label {
+            color: #6a7a94;
+            font-weight: 400;
+        }
+
+        .stats-grid .stat-value {
+            color: #1a1e2c;
+            font-weight: 500;
+            text-align: right;
+            font-feature-settings: "tnum";
+        }
+
+        .stats-grid .stat-value.highlight {
+            color: #4a7cf7;
+            font-weight: 600;
+        }
+
+        /* ===== 消息条 ===== */
+        .msg-bar {
+            margin-top: 4px;
+            font-size: 12px;
+            color: #1e7a44;
+            min-height: 20px;
+            transition: opacity 0.25s;
+            font-weight: 400;
+            letter-spacing: 0.2px;
+        }
+
+        .msg-bar.empty {
+            opacity: 0;
+        }
+
+        /* ===== 键盘提示 ===== */
+        .kbd-hint {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0, 0, 0, 0.05);
+            font-size: 11px;
+            color: #7a8aa3;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            letter-spacing: 0.2px;
+        }
+
+        .kbd-hint kbd {
+            display: inline-block;
+            background: rgba(0, 0, 0, 0.04);
+            padding: 0 8px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 11px;
+            color: #2a3a54;
+            border: 1px solid rgba(0, 0, 0, 0.04);
+        }
+
+        .kbd-hint span {
+            color: #a0b0c8;
+        }
+
+        /* ===== 响应式 ===== */
+        @media (max-width: 1024px) {
+            .dashboard {
+                max-width: 100%;
+                padding: 24px 20px 28px;
+            }
+            .main-grid {
+                grid-template-columns: 1fr 260px;
+                gap: 20px;
+            }
+        }
+
+        @media (max-width: 820px) {
+            .dashboard {
+                border-radius: 28px;
+                padding: 20px 16px 24px;
+            }
+            .main-grid {
+                grid-template-columns: 1fr;
+                gap: 24px;
+            }
+            .header h1 {
+                font-size: 18px;
+            }
+            .header h1 small {
+                font-size: 12px;
+            }
+            .frame-wrapper {
+                min-height: 300px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .dashboard {
+                padding: 14px 12px 20px;
+                border-radius: 20px;
+            }
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+                gap: 2px;
+            }
+            .stats-grid .stat-value {
+                text-align: left;
+            }
+            .fps-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .size-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .size-row label {
+                justify-content: space-between;
+            }
+            .btn-group .btn {
+                flex: 1;
+                justify-content: center;
+            }
+            .frame-wrapper {
+                min-height: 220px;
+            }
+        }
+
+        /* ===== 动画 ===== */
+        @keyframes pulse-dot {
+            0%,
+            100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+        }
+        .status-badge .dot.pulsing {
+            animation: pulse-dot 1.6s ease-in-out infinite;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .dashboard {
+            animation: fadeInUp 0.5s ease-out both;
+        }
+
+        /* ===== 滚动条 ===== */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 0, 0, 0.2);
+        }
+    </style>
 </head>
 <body>
-<h1>libevent 图像服务器 · 浏览器界面</h1>
-<div class="bar">
-  <button onclick="startPlay()">开始 (s)</button>
-  <button onclick="stopPlay()">暂停 (q)</button>
-  <button onclick="doHeartbeat()">心跳 (h)</button>
-  <button onclick="setFps(20)">20ms</button>
-  <button onclick="setFps(50)">50ms</button>
-  <button onclick="setFps(100)">100ms</button>
-  <button onclick="setFps(200)">200ms</button>
-  <button onclick="closeMonitor()">关闭监控 (x)</button>
-  <button onclick="openMonitor()">打开监控 (o)</button>
-  <label>宽 <input id="inp_w" type="number" min="160" max="1920" value="640"></label>
-  <label>高 <input id="inp_h" type="number" min="120" max="1080" value="480"></label>
-  <button onclick="applyDisplay()">应用尺寸</button>
-</div>
-<img id="frame" width="640" height="480" alt="实时图像">
-<div id="stats">连接中...</div>
-<div id="msg"></div>
-<div class="kbd">按键：s 开始 / q 暂停 / o 打开监控 / x 关闭监控 / h 心跳 / 1-4 帧率(20/50/100/200ms)；宽高输入框只改本页显示尺寸</div>
 
-<script>
-let playing = true;   // 本页是否在拉取图像
-let busy = false;     // 防止上一次请求未完成时重复请求
-let url = null;       // 当前图像 blob URL
-let dispW = 640, dispH = 480;   // 服务器保存的浏览器显示尺寸
-let dispLoaded = false;         // 是否已从服务器同步过一次输入框
-const MIN_W = 160, MAX_W = 1920, MIN_H = 120, MAX_H = 1080;
+    <div class="dashboard" id="app">
+        <!-- ===== 头部 ===== -->
+        <div class="header">
+            <div class="header-left">
+                <div class="logo-icon">📡</div>
+                <h1>libevent <small>图像服务器</small></h1>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <span class="dot pulsing" id="statusDot"></span>
+                <span id="statusText">运行中</span>
+            </div>
+        </div>
 
-async function refresh() {
-  if (!playing || busy) return;
-  busy = true;
-  try {
-    const r = await fetch('/frame', { cache: 'no-cache' });
-    if (r.status === 304) return;        // 帧未变：保留当前图像，避免闪烁
-    if (!r.ok) return;
-    const blob = await r.blob();
-    if (url) URL.revokeObjectURL(url);
-    url = URL.createObjectURL(blob);
-    document.getElementById('frame').src = url;
-  } catch (e) { /* 网络中断时静默重试 */ } finally { busy = false; }
-}
+        <!-- ===== 主体 ===== -->
+        <div class="main-grid">
+            <!-- 左栏：图像 (放大) -->
+            <div class="frame-wrapper" id="frameWrap">
+                <img id="frame" alt="实时图像" style="opacity:0;">
+                <div class="frame-overlay" id="frameOverlay">● LIVE</div>
+            </div>
 
-async function stats() {
-  try {
-    const r = await fetch('/api/stats');
-    const s = await r.json();
-    if (s.disp_w && s.disp_h) {
-      dispW = s.disp_w; dispH = s.disp_h;
-      applyImgSize();
-      if (!dispLoaded) {   // 只在首次同步输入框，避免打断用户输入
-        document.getElementById('inp_w').value = dispW;
-        document.getElementById('inp_h').value = dispH;
-        dispLoaded = true;
-      }
-    }
-    document.getElementById('stats').textContent =
-      '帧号 ' + s.seq +
-      ' | C客户端 ' + s.clients +
-      ' | ' + (s.running ? '运行中' : '已暂停') +
-      ' | 间隔 ' + s.interval_ms + 'ms' +
-      ' | 服务器 ' + s.fps + 'fps' +
-      ' | 心跳 ' + s.heartbeat +
-      ' | 监控:' + (playing ? '开' : '关') +
-      ' | 显示 ' + dispW + 'x' + dispH;
-  } catch (e) { document.getElementById('stats').textContent = '连接失败，重试中...'; }
-}
+            <!-- 右栏：控制面板 (收窄) -->
+            <div class="panel">
+                <!-- 播放控制 -->
+                <div class="panel-section">
+                    <div class="section-title">▶ 播放控制</div>
+                    <div class="btn-group">
+                        <button class="btn btn-success" onclick="startPlay()">▶ 开始</button>
+                        <button class="btn btn-warning" onclick="stopPlay()">⏸ 暂停</button>
+                        <button class="btn btn-ghost" onclick="doHeartbeat()">❤ 心跳</button>
+                        <button class="btn btn-ghost" onclick="openMonitor()">👁 监控开</button>
+                        <button class="btn btn-ghost" onclick="closeMonitor()">🚫 监控关</button>
+                    </div>
+                </div>
 
-async function startPlay() {
-  await fetch('/api/start', { method: 'POST' });
-  playing = true;
-  refresh();
-}
+                <!-- 帧率 -->
+                <div class="panel-section">
+                    <div class="section-title">⏱ 帧率间隔</div>
+                    <div class="fps-grid" id="fpsGrid">
+                        <button class="btn" data-ms="20">20ms</button>
+                        <button class="btn active" data-ms="50">50ms</button>
+                        <button class="btn" data-ms="100">100ms</button>
+                        <button class="btn" data-ms="200">200ms</button>
+                    </div>
+                </div>
 
-async function stopPlay() {
-  await fetch('/api/stop', { method: 'POST' });
-  playing = false;   // 停止拉图：页面保留最后一帧，不再闪烁
-  stats();
-}
+                <!-- 显示尺寸 -->
+                <div class="panel-section">
+                    <div class="section-title">📐 显示尺寸</div>
+                    <div class="size-row">
+                        <label>宽 <input id="inp_w" type="number" min="160" max="1920" value="640"></label>
+                        <label>高 <input id="inp_h" type="number" min="120" max="1080" value="480"></label>
+                        <button class="btn btn-primary btn-apply" onclick="applyDisplay()">应用</button>
+                    </div>
+                </div>
 
-async function doHeartbeat() {
-  await fetch('/api/heartbeat');
-  stats();
-}
+                <!-- 统计 -->
+                <div class="panel-section" style="flex:1;">
+                    <div class="section-title">📊 实时统计</div>
+                    <div class="stats-grid" id="statsGrid">
+                        <span class="stat-label">帧号</span>
+                        <span class="stat-value" id="statSeq">—</span>
+                        <span class="stat-label">C客户端</span>
+                        <span class="stat-value" id="statClients">0</span>
+                        <span class="stat-label">服务器 FPS</span>
+                        <span class="stat-value highlight" id="statFps">—</span>
+                        <span class="stat-label">间隔</span>
+                        <span class="stat-value" id="statInterval">—</span>
+                        <span class="stat-label">心跳</span>
+                        <span class="stat-value" id="statHeartbeat">—</span>
+                        <span class="stat-label">本页监控</span>
+                        <span class="stat-value" id="statMonitor">开</span>
+                    </div>
+                    <div class="msg-bar empty" id="msg"></div>
+                </div>
 
-async function setFps(ms) {
-  await fetch('/api/fps', { method: 'POST', body: String(ms) });
-  stats();
-}
+                <!-- 键盘提示 -->
+                <div class="kbd-hint">
+                    <kbd>s</kbd> 开始 <span>·</span>
+                    <kbd>q</kbd> 暂停 <span>·</span>
+                    <kbd>o</kbd> 监控开 <span>·</span>
+                    <kbd>x</kbd> 监控关 <span>·</span>
+                    <kbd>h</kbd> 心跳 <span>·</span>
+                    <kbd>1</kbd>–<kbd>4</kbd> 帧率
+                </div>
+            </div>
+        </div>
+    </div>
 
-function showMsg(t) {
-  const el = document.getElementById('msg');
-  el.textContent = t;
-  clearTimeout(showMsg._t);
-  showMsg._t = setTimeout(() => { el.textContent = ''; }, 4000);
-}
+    <script>
+        // ============================================================
+        //  状态 (与之前完全一致)
+        // ============================================================
+        let playing = true;
+        let busy = false;
+        let url = null;
+        let dispW = 0,
+            dispH = 0;
+        let userSet = false;
+        let dispLoaded = false;
+        const MIN_W = 160,
+            MAX_W = 1920,
+            MIN_H = 120,
+            MAX_H = 1080;
 
-function applyImgSize() {
-  document.getElementById('frame').style.width = dispW + 'px';
-  document.getElementById('frame').style.height = dispH + 'px';
-}
+        const frameEl = document.getElementById('frame');
+        const frameWrapEl = document.getElementById('frameWrap');
+        const msgEl = document.getElementById('msg');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const frameOverlay = document.getElementById('frameOverlay');
+        const fpsGrid = document.getElementById('fpsGrid');
 
-async function applyDisplay() {
-  let w = parseInt(document.getElementById('inp_w').value, 10);
-  let h = parseInt(document.getElementById('inp_h').value, 10);
-  if (isNaN(w) || isNaN(h)) { showMsg('请输入数字宽高'); return; }
-  w = Math.min(Math.max(w, MIN_W), MAX_W);
-  h = Math.min(Math.max(h, MIN_H), MAX_H);
-  document.getElementById('inp_w').value = w;
-  document.getElementById('inp_h').value = h;
-  try {
-    const r = await fetch('/api/display', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ w, h })
-    });
-    const j = await r.json();
-    if (j.ok) {
-      dispW = j.w; dispH = j.h;
-      applyImgSize();
-      showMsg('显示尺寸已设为 ' + dispW + 'x' + dispH);
-    } else {
-      showMsg('尺寸设置失败：' + (j.error || '未知错误'));
-    }
-  } catch (e) {
-    showMsg('服务器无响应，尺寸未应用');
-  }
-}
+        // ============================================================
+        //  工具
+        // ============================================================
+        function showMsg(text, isError = false) {
+            msgEl.textContent = text;
+            msgEl.style.color = isError ? '#b13e3e' : '#1e7a44';
+            msgEl.classList.remove('empty');
+            clearTimeout(showMsg._t);
+            showMsg._t = setTimeout(() => {
+                msgEl.classList.add('empty');
+            }, 4000);
+        }
 
+        function updateStatus(running, monitorOn) {
+            const dot = statusDot;
+            const text = statusText;
+            if (!running) {
+                dot.className = 'dot paused';
+                text.textContent = '已暂停';
+            } else if (!monitorOn) {
+                dot.className = 'dot off';
+                text.textContent = '监控关';
+            } else {
+                dot.className = 'dot pulsing';
+                text.textContent = '运行中';
+            }
+            if (monitorOn && running) {
+                frameOverlay.textContent = '● LIVE';
+                frameOverlay.style.color = '#1f2a44';
+            } else if (!monitorOn) {
+                frameOverlay.textContent = '⏸ 监控关闭';
+                frameOverlay.style.color = '#a87a00';
+            } else {
+                frameOverlay.textContent = '⏸ 已暂停';
+                frameOverlay.style.color = '#a87a00';
+            }
+            document.getElementById('statMonitor').textContent = monitorOn ? '开' : '关';
+        }
 
+        function applyImgSize() {
+            // 纯显示缩放：dispW/dispH 只是“显示框大小”，与图像像素无关（图像始终 640x480）。
+            // 点过“应用”就按输入宽高缩放显示框；没点过则自动填满。
+            if (userSet && dispW > 0 && dispH > 0) {
+                frameWrapEl.style.width = dispW + 'px';
+                frameWrapEl.style.height = dispH + 'px';
+                frameWrapEl.style.minHeight = dispH + 'px';
+            } else {
+                frameWrapEl.style.width = '';
+                frameWrapEl.style.height = '';
+                frameWrapEl.style.minHeight = '';
+            }
+            // 只负责显示框尺寸，不回写输入框（否则每秒轮询会覆盖用户正在输入的值）。
+        }
 
-function closeMonitor() {
-  playing = false;
-  document.getElementById('stats').textContent = '本页监控已关闭（服务端仍在运行）';
-}
+        // ============================================================
+        //  API 调用
+        // ============================================================
+        async function refresh() {
+            if (!playing || busy) return;
+            busy = true;
+            try {
+                const r = await fetch('/frame', { cache: 'no-cache' });
+                if (r.status === 304) return;
+                if (!r.ok) return;
+                const blob = await r.blob();
+                if (url) URL.revokeObjectURL(url);
+                url = URL.createObjectURL(blob);
+                frameEl.src = url;
+                frameEl.style.opacity = '1';
+            } catch (_) { /* 静默 */ } finally {
+                busy = false;
+            }
+        }
 
-function openMonitor() {
-  playing = true;
-  refresh();
-}
+        async function stats() {
+            try {
+                const r = await fetch('/api/stats');
+                const s = await r.json();
 
-document.addEventListener('keydown', (e) => {
-  switch (e.key.toLowerCase()) {
-    case 's': startPlay(); break;
-    case 'q': stopPlay(); break;
-    case 'h': doHeartbeat(); break;
-    case '1': setFps(20); break;
-    case '2': setFps(50); break;
-    case '3': setFps(100); break;
-    case '4': setFps(200); break;
-    case 'o': openMonitor(); break;
-    case 'x': closeMonitor(); break;
-  }
-});
+                if (s.disp_w && s.disp_h) {
+                    dispW = s.disp_w;
+                    dispH = s.disp_h;
+                    if (!dispLoaded) {
+                        document.getElementById('inp_w').value = dispW;
+                        document.getElementById('inp_h').value = dispH;
+                        dispLoaded = true;
+                    }
+                }
 
-setInterval(refresh, 50);   // 与 WEB_POLL_MS 一致
-setInterval(stats, 1000);
-refresh();
-stats();
-</script>
+                document.getElementById('statSeq').textContent = s.seq ?? '—';
+                document.getElementById('statClients').textContent = s.clients ?? 0;
+                document.getElementById('statFps').textContent = s.fps ?? '—';
+                document.getElementById('statInterval').textContent = (s.interval_ms ?? '—') + 'ms';
+                document.getElementById('statHeartbeat').textContent = s.heartbeat ?? '—';
+
+                const running = s.running ?? false;
+                const monitorOn = playing;
+                updateStatus(running, monitorOn);
+
+                const curMs = s.interval_ms;
+                if (curMs) {
+                    fpsGrid.querySelectorAll('.btn').forEach(btn => {
+                        const ms = parseInt(btn.dataset.ms, 10);
+                        btn.classList.toggle('active', ms === curMs);
+                    });
+                }
+
+            } catch (_) {
+                document.getElementById('statSeq').textContent = '⚠';
+                document.getElementById('statFps').textContent = '—';
+                document.getElementById('statInterval').textContent = '—';
+                document.getElementById('statHeartbeat').textContent = '—';
+                updateStatus(false, playing);
+                showMsg('服务器连接丢失', true);
+            }
+        }
+
+        // ============================================================
+        //  控制函数 (暴露给 HTML)
+        // ============================================================
+        async function startPlay() {
+            try {
+                await fetch('/api/start', { method: 'POST' });
+            } catch (_) { /* */ }
+            playing = true;
+            updateStatus(true, true);
+            refresh();
+            showMsg('▶ 开始拉流');
+        }
+
+        async function stopPlay() {
+            try {
+                await fetch('/api/stop', { method: 'POST' });
+            } catch (_) { /* */ }
+            playing = false;
+            updateStatus(false, false);
+            stats();
+            showMsg('⏸ 已暂停');
+        }
+
+        async function doHeartbeat() {
+            try {
+                await fetch('/api/heartbeat');
+            } catch (_) { /* */ }
+            stats();
+            showMsg('❤ 心跳已发送');
+        }
+
+        async function setFps(ms) {
+            try {
+                await fetch('/api/fps', { method: 'POST', body: String(ms) });
+            } catch (_) { /* */ }
+            stats();
+            fpsGrid.querySelectorAll('.btn').forEach(btn => {
+                btn.classList.toggle('active', parseInt(btn.dataset.ms, 10) === ms);
+            });
+            showMsg('⏱ 帧率间隔设为 ' + ms + 'ms');
+        }
+
+        function openMonitor() {
+            playing = true;
+            updateStatus(true, true);
+            refresh();
+            showMsg('👁 监控已打开');
+        }
+
+        function closeMonitor() {
+            playing = false;
+            updateStatus(true, false);
+            showMsg('🚫 监控已关闭（服务端仍在运行）');
+        }
+
+        async function applyDisplay() {
+            let w = parseInt(document.getElementById('inp_w').value, 10);
+            let h = parseInt(document.getElementById('inp_h').value, 10);
+            if (isNaN(w) || isNaN(h)) { showMsg('请输入有效数字', true); return; }
+            w = Math.min(Math.max(w, MIN_W), MAX_W);
+            h = Math.min(Math.max(h, MIN_H), MAX_H);
+            document.getElementById('inp_w').value = w;
+            document.getElementById('inp_h').value = h;
+            try {
+                const r = await fetch('/api/display', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ w, h })
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    dispW = j.w;
+                    dispH = j.h;
+                    userSet = true;
+                    applyImgSize();
+                    showMsg('📐 显示尺寸已设为 ' + dispW + '×' + dispH);
+                } else {
+                    showMsg('尺寸设置失败：' + (j.error || '未知'), true);
+                }
+            } catch (_) {
+                showMsg('服务器无响应，尺寸未应用', true);
+            }
+        }
+
+        // ============================================================
+        //  键盘快捷键
+        // ============================================================
+        document.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            switch (key) {
+                case 's': e.preventDefault(); startPlay(); break;
+                case 'q': e.preventDefault(); stopPlay(); break;
+                case 'h': e.preventDefault(); doHeartbeat(); break;
+                case '1': setFps(20); break;
+                case '2': setFps(50); break;
+                case '3': setFps(100); break;
+                case '4': setFps(200); break;
+                case 'o': e.preventDefault(); openMonitor(); break;
+                case 'x': e.preventDefault(); closeMonitor(); break;
+            }
+        });
+
+        // ============================================================
+        //  帧率按钮点击
+        // ============================================================
+        fpsGrid.addEventListener('click', (e) => {
+            const btn = e.target.closest('.btn');
+            if (!btn) return;
+            const ms = parseInt(btn.dataset.ms, 10);
+            if (!isNaN(ms)) setFps(ms);
+        });
+
+        // ============================================================
+        //  轮询
+        // ============================================================
+        setInterval(refresh, 50);
+        setInterval(stats, 1000);
+
+        refresh();
+        stats();
+        frameEl.style.opacity = '1';
+        showMsg('🚀 已连接服务器');
+        setTimeout(() => msgEl.classList.add('empty'), 2000);
+    </script>
+
 </body>
 </html>

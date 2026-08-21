@@ -1,12 +1,12 @@
-#include "web_server.hpp"
+#include "web_server.h"
 
 #include <cstdio>
 #include <cstdlib>
 
-#include "../common/logger.hpp"
-#include "../common/protocol.hpp"
-#include "client_manager.hpp"
-#include "image_source.hpp"
+#include "../common/logger.h"
+#include "../common/protocol.h"
+#include "client_manager.h"
+#include "image_source.h"
 
 namespace cam {
 

@@ -25,7 +25,6 @@ public:
 
     void setLevel(LogLevel level);      /* 只输出 >= 该级别的内容 */
     LogLevel level() const { return level_; }
-    static const char* levelName(LogLevel lv);  /* 级别名：DBG/INF/WRN/ERR */
 
     void enableTimestamp(bool on) { ts_ = on; }
 

@@ -1,4 +1,4 @@
-#include "server.hpp"
+#include "server.h"
 
 #include <csignal>
 #include <cstdio>
@@ -8,12 +8,12 @@
 #include <event2/listener.h>
 #include <event2/thread.h>
 
-#include "../common/logger.hpp"
-#include "../common/protocol.hpp"
-#include "client_manager.hpp"
-#include "client_session.hpp"
-#include "image_source.hpp"
-#include "web_server.hpp"
+#include "../common/logger.h"
+#include "../common/protocol.h"
+#include "client_manager.h"
+#include "client_session.h"
+#include "image_source.h"
+#include "web_server.h"
 
 
 #ifdef _WIN32
@@ -52,8 +52,8 @@ void Server::stop()
 void Server::onSigint(int sig)
 {
     (void)sig;
-    if (Server* s = instance())
-        s->stop();
+    Server* s = instance();
+    if (s) s->stop();
 }
 
 void Server::onAccept(struct evconnlistener* lst, evutil_socket_t fd,
@@ -131,7 +131,7 @@ int Server::run()
         std::printf("[server] 警告：浏览器界面启动失败，C 客户端功能不受影响\n");
 
     std::printf("=============================================\n");
-    std::printf(" libevent 图像服务器 (C++17)\n");
+    std::printf(" libevent 图像服务器 (C++11)\n");
     std::printf(" 监听端口   : %d\n", kServerPort);
     std::printf(" 最大客户端 : %d\n", kMaxClients);
     std::printf(" 图像       : %dx%d 8bit 灰度，%dms/帧\n",

@@ -1,9 +1,9 @@
-﻿#include <cstdio>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 
-#include "client.hpp"
+#include "client.h"
 
 int main(int argc, char** argv)
 {

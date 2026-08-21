@@ -1,8 +1,8 @@
-#include "client_manager.hpp"
+#include "client_manager.h"
 
-#include "../common/logger.hpp"
-#include "../common/protocol.hpp"
-#include "client_session.hpp"
+#include "../common/logger.h"
+#include "../common/protocol.h"
+#include "client_session.h"
 
 namespace cam {
 
@@ -22,7 +22,7 @@ ClientSession* ClientManager::add(evutil_socket_t fd)
 
     for (int i = 0; i < kMaxClients; i++) {
         if (!slots_[static_cast<size_t>(i)]) {
-            auto session = std::make_unique<ClientSession>(this, source_, fd);
+            std::unique_ptr<ClientSession> session(new ClientSession(this, source_, fd));
             session->setSlot(i);
             slots_[static_cast<size_t>(i)] = std::move(session);
             count_.fetch_add(1);

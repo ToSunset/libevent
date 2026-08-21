@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "client_session.hpp"
+#include "client_session.h"
 
 #include <chrono>
 #include <cstring>
@@ -11,10 +11,10 @@
 #include <event2/bufferevent.h>
 #include <event2/event.h>
 
-#include "../common/logger.hpp"
-#include "../common/protocol.hpp"
-#include "client_manager.hpp"
-#include "image_source.hpp"
+#include "../common/logger.h"
+#include "../common/protocol.h"
+#include "client_manager.h"
+#include "image_source.h"
 
 #ifdef _WIN32
 #include <windows.h>

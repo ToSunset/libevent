@@ -1,4 +1,4 @@
-#include "png_encoder.hpp"
+#include "png_encoder.h"
 
 #include <cstring>
 

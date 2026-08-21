@@ -2,7 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 
-#include "client.hpp"
+#include "client.h"
 
 #include <chrono>
 #include <cstdio>
@@ -14,7 +14,7 @@
 #include <event2/event.h>
 #include <event2/thread.h>
 
-#include "../common/logger.hpp"
+#include "../common/logger.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -594,7 +594,7 @@ int Client::run()
     }
 
     printf("=============================================\n");
-    printf(" libevent 图像客户端 (C++17)\n");
+    printf(" libevent 图像客户端 (C++11)\n");
     printf(" 服务器 : %s:%d\n", ip_.c_str(), port_);
     printf(" 心跳   : 每 %dms 一次（空闲时）\n", kClientHeartbeatIntervalMs);
     printf(" 读超时 : %dms\n", kClientReadTimeoutMs);

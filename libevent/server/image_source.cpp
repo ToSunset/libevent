@@ -1,17 +1,17 @@
-#include "image_source.hpp"
+#include "image_source.h"
 
 #include <chrono>
 #include <cstring>
 
 #include <event2/event.h>
 
-#include "../common/logger.hpp"
-#include "../common/protocol.hpp"
+#include "../common/logger.h"
+#include "../common/protocol.h"
 
 namespace cam {
 
 namespace {
-constexpr int kImgGenIntervalDefault = 20;   /* 与 protocol.hpp 的默认值一致 */
+constexpr int kImgGenIntervalDefault = 20;   /* 与 protocol.h 的默认值一致 */
 }
 
 ImageSource::ImageSource()

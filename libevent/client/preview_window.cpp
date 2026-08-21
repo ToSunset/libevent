@@ -1,4 +1,4 @@
-﻿#include "preview_window.hpp"
+#include "preview_window.h"
 
 #include <cstdio>
 

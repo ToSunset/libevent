@@ -8,7 +8,6 @@
  *   /api/heartbeat -> 浏览器心跳计数
  *   /api/fps       -> POST body 为毫秒数，动态调整帧间隔
  *   /api/display   -> POST {"w":..,"h":..} 设置浏览器显示尺寸
- *   /api/log       -> GET 查询日志级别；POST body=级别名(next/debug/info/warn/error/off)
  * 状态只在 web 线程（mg_mgr_poll 回调）内访问，无需加锁。 */
 
 #include <atomic>
@@ -18,7 +17,6 @@
 #include <vector>
 
 #include "mongoose.h"
-#include "../common/logger.h"
 #include "../common/protocol.h"
 #include "png_encoder.h"
 
@@ -47,7 +45,6 @@ private:
     void serveStats(struct mg_connection* c);
     void handleFps(struct mg_connection* c, struct mg_http_message* hm);
     void handleDisplay(struct mg_connection* c, struct mg_http_message* hm);
-    void handleLog(struct mg_connection* c, struct mg_http_message* hm);
     static void replyJson(struct mg_connection* c, const char* body);
 
     ImageSource*  source_;
