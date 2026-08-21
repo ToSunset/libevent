@@ -101,6 +101,7 @@ static inline void thrd_detach(thrd_t t)
 
 #include <pthread.h>
 #include <time.h>
+#include <errno.h>   /* ETIMEDOUT */
 
 typedef pthread_mutex_t mtx_t;
 typedef pthread_cond_t  cnd_t;

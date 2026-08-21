@@ -157,7 +157,7 @@ static void send_client(client_t *c, const void *data, int len)
 static void *send_image_thread(void *arg)
 {
     client_t *c = (client_t *)arg;
-    uint8_t *frame = (uint8_t *)malloc(IMG_DATA_LEN);
+    uint8_t *frame = (uint8_t *)malloc(IMG_HEAD_LEN + IMG_DATA_LEN);
     uint8_t  hdr[IMG_HEAD_LEN];
     int      timed_out = 0;
 
@@ -195,15 +195,15 @@ static void *send_image_thread(void *arg)
         }
         timed_out = 0;
 
-        /* 有新图：在锁内拷贝最新一帧（发送在锁外进行） */
+        /* 有新图：在锁内把最新一帧拷贝到"头+数据"缓冲（发送在锁外进行） */
         c->last_seq = g_img_seq;
-        memcpy(frame, g_img_buf, IMG_DATA_LEN);
+        memcpy(frame + IMG_HEAD_LEN, g_img_buf, IMG_DATA_LEN);
         mtx_unlock(&g_img_lock);
 
-        /* 先发 16 字节数据头，再发 640x480 图像 */
-        build_head(hdr, CTL_IMG_DATA, ERR_OK, IMG_DATA_LEN);
-        send_client(c, hdr, IMG_HEAD_LEN);
-        send_client(c, frame, IMG_DATA_LEN);
+        /* 数据头与图像数据合并成一次 send_client 发送，保证协议帧连续，
+         * 不会被本客户端的其他发送（如心跳应答）插队打断 */
+        build_head(frame, CTL_IMG_DATA, ERR_OK, IMG_DATA_LEN);
+        send_client(c, frame, IMG_HEAD_LEN + IMG_DATA_LEN);
     }
 
     free(frame);
