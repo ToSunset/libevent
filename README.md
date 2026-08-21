@@ -13,3 +13,15 @@ Server：后台线程定时生成灰度测试图像，条件变量广播新帧�
 
 Client：TCP 连接服务端，3 秒周期发送心跳检测链路；支持请求 / 停止图像接收；网络异常、读超时自动断线重连；可保存原始灰度图像文件。
 **Client**: Establishes TCP connection to the server, and sends heartbeat packets every 3 seconds for link detection. It supports requesting / stopping image reception. Automatic disconnection and reconnection will be triggered on network exceptions or read timeout. Raw grayscale image files can be saved locally.
+
+
+
+ 本项目是本人课程学习的实践练习，全部内容均不用于商业盈利。项目实现过程中借鉴、使用了大量优秀的开源库与公开技术资料，在此向所有开源作者致以诚挚的感谢。若项目中存在因信息疏漏，在不知情的情况下使用了他人受版权保护的内容，恳请相关作者与我取得联系，我会及时修正补充相关版权说明。今后我也会加强对开源协议、版权规范的学习，避免无意侵权问题的发生。 
+
+This project is a practical exercise for my university coursework. All content is non‑commercial and not intended for profit.
+
+In the course of implementation, this project draws on and utilizes numerous excellent open‑source libraries and publicly‑available technical materials. I would like to extend my sincere gratitude to all open‑source authors for their contributions.
+
+If any copyright‑protected work belonging to third parties has been unintentionally used without proper attribution due to omissions, please feel free to contact me. I will promptly revise and supplement the relevant copyright statements.
+
+I will further deepen my understanding of open‑source licenses and copyright standards to prevent unintentional copyright infringements in future work.
