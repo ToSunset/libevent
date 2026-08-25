@@ -9,7 +9,7 @@
 
 #include <event2/util.h>
 
-#include "../common/protocol.h"
+#include "common/protocol.h"
 #include "client_session.h"
 
 namespace cam {

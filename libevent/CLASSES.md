@@ -16,8 +16,8 @@
 | PngEncoder | server/png_encoder.h/.cpp | 自包含极简 PNG 编码器 |
 | Client | client/client.h/.cpp | 客户端状态机 + 事件循环 |
 | PreviewWindow | client/preview_window.h/.cpp | Win32 GDI 预览窗口（Linux 空壳） |
-| Logger | common/logger.h/.cpp | 分级日志（DBG/INF/WRN/ERR） |
-| FrameHeader | common/protocol.h | 16 字节协议头（class 封装） |
+| Logger | server/common/logger.h（client/common 同步）/.cpp | 分级日志（DBG/INF/WRN/ERR） |
+| FrameHeader | server/common/protocol.h（client/common 同步） | 16 字节协议头（class 封装） |
 
 ## 二、类图（依赖关系）
 
@@ -109,12 +109,12 @@
 - public：`create/destroy/showFrame/pumpMessages/setVisible/setTitle/hasWindow`。
 - private：`wnd_/memDc_/dib_/rgbBuf_`、`width_/height_`。
 
-### 9. class Logger（common/logger.h）
+### 9. class Logger（server/common/logger.h（client/common 同步））
 - 职责：分级日志（kDebug/kInfo/kWarn/kError/kOff）+ 时间戳 + 线程安全。
 - public：`instance()`、`setLevel`、`debug/info/warn/error`。
 - private：`log()`、`level_`、`ts_`、`mu_`。
 
-### 10. class FrameHeader（common/protocol.h）
+### 10. class FrameHeader（server/common/protocol.h（client/common 同步））
 - 职责：16 字节协议头（flag"CAM0" + ctl + err + len），class 封装。
 - public：`flag/ctl/err/len`、构造、`kSize`、`isValid`、`toBytes`、`fromBytes`。
 

@@ -14,7 +14,7 @@
 
 #include <event2/util.h>
 
-#include "../common/protocol.h"
+#include "common/protocol.h"
 #include "preview_window.h"
 
 struct bufferevent;
@@ -94,6 +94,7 @@ private:
     uint32_t hbCount_ = 0;
     uint32_t reconnectCount_ = 0;
     int      saveEvery_ = 30;
+    uint32_t saveCount_ = 0;
     std::atomic<int> saving_{0};
     std::string saveDir_;
 

@@ -8,8 +8,8 @@
 #include <event2/listener.h>
 #include <event2/thread.h>
 
-#include "../common/logger.h"
-#include "../common/protocol.h"
+#include "common/logger.h"
+#include "common/protocol.h"
 #include "client_manager.h"
 #include "client_session.h"
 #include "image_source.h"
@@ -18,6 +18,7 @@
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #else
 #include <netinet/in.h>
@@ -64,11 +65,26 @@ void Server::onAccept(struct evconnlistener* lst, evutil_socket_t fd,
 
     ClientSession* s = self->clients_.add(fd);
     if (!s) {
+        LOG_WARN("[SRV] 拒绝连接：客户端已满（%d/%d）", kMaxClients, kMaxClients);
         evutil_closesocket(fd);
         return;
     }
-    LOG_INFO("[server] 接受客户端 %lld，当前 %d/%d",
-             static_cast<long long>(fd), self->clients_.count(), kMaxClients);
+    char peer[64] = "unknown";
+    if (sa) {
+        const struct sockaddr_in* sin =
+            reinterpret_cast<const struct sockaddr_in*>(sa);
+        char ip[INET_ADDRSTRLEN] = "?";
+#ifdef _WIN32
+        InetNtopA(AF_INET, const_cast<struct in_addr*>(&sin->sin_addr),
+                  ip, static_cast<DWORD>(sizeof(ip)));
+#else
+        inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+#endif
+        std::snprintf(peer, sizeof(peer), "%s:%d", ip, ntohs(sin->sin_port));
+    }
+    LOG_INFO("[SRV] 接受客户端 %s (fd=%lld)，当前 %d/%d",
+             peer, static_cast<long long>(fd),
+             self->clients_.count(), kMaxClients);
 
     /* 控制线程不 join：创建后立即分离，线程结束自动清理资源 */
     s->start();
@@ -85,7 +101,7 @@ int Server::run()
     {
         WSADATA wsa;
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-            std::printf("WSAStartup 失败\n");
+            LOG_ERROR("[SRV] WSAStartup 初始化失败");
             return 1;
         }
     }
@@ -100,7 +116,7 @@ int Server::run()
 
     base_ = event_base_new();
     if (!base_) {
-        std::printf("event_base_new 失败\n");
+        LOG_ERROR("[SRV] 初始化事件循环失败");
         return 1;
     }
 
@@ -114,12 +130,12 @@ int Server::run()
         LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, -1,
         reinterpret_cast<struct sockaddr*>(&sin), sizeof(sin));
     if (!listener_) {
-        std::printf("监听端口 %d 失败\n", kServerPort);
+        LOG_ERROR("[SRV] 监听端口 %d 失败", kServerPort);
         return 1;
     }
 
     if (!source_.start()) {
-        std::printf("图像生成线程启动失败\n");
+        LOG_ERROR("[SRV] 图像生成线程启动失败");
         return 1;
     }
 
@@ -128,7 +144,7 @@ int Server::run()
 
     /* 浏览器界面启动失败只告警，不影响 C 客户端 */
     if (!web_.start())
-        std::printf("[server] 警告：浏览器界面启动失败，C 客户端功能不受影响\n");
+        LOG_WARN("[SRV] 浏览器界面启动失败，C 客户端功能不受影响");
 
     std::printf("=============================================\n");
     std::printf(" libevent 图像服务器 (C++11)\n");
@@ -144,7 +160,7 @@ int Server::run()
 
     /* ---- 退出清理：唤醒生成线程并 join，再停 web、释放监听器/事件循环。
      * 各客户端的控制线程是独立线程，进程退出时随进程一起结束。 */
-    std::printf("\n服务器退出中...\n");
+    LOG_INFO("[SRV] 服务器退出中...");
     source_.stop();
     web_.stop();
     if (listener_) {
@@ -153,7 +169,7 @@ int Server::run()
     }
     event_base_free(base_);
     base_ = nullptr;
-    std::printf("服务器已退出\n");
+    LOG_INFO("[SRV] 服务器已退出");
 
 #ifdef _WIN32
     WSACleanup();

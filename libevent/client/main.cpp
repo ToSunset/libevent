@@ -4,6 +4,7 @@
 #include <string>
 
 #include "client.h"
+#include "common/logger.h"
 
 int main(int argc, char** argv)
 {
@@ -22,5 +23,7 @@ int main(int argc, char** argv)
         }
     }
 
+    /* 日志级别：kDebug 全量 / kInfo 常规 / kWarn / kError / kOff */
+    cam::Logger::instance().setLevel(cam::LogLevel::kInfo);
     return cam::Client(ip, port, autoImage).run();
 }

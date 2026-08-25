@@ -1,15 +1,13 @@
 ******至日落******
 server和client都可以在win也可以在Ubuntu
 
-
 cd /mnt/hgfs/Share/libevent
-
 
 http://192.168.183.129:8080
 http://127.0.0.1:8080
 
 win
-cd G:\Share\libevent\client\Release
+cd G:\Share\libevent\client\win\Release
 .\client.exe 192.168.183.129 9995
 
 	  
@@ -53,16 +51,18 @@ h=手动心跳      退出按 Ctrl+C
 
 使用说明（已完成代码见本目录 server/、client/）
 
-一、工程结构
-  common\protocol.h   协议定义：ImgHead_t（16 字节头）、控制码、错误码、常量
-  server 服务器：图像生成 + 监听 + 每客户端控制/发送线程
+一、工程结构（2026-08 整理：win=VS 工程与产物，ubuntu=Linux 构建与产物）
+  server\server\common\protocol.h   协议定义：FrameHeader（16 字节 "CAM0" 头）、控制码、错误码、常量
+  server 服务器：图像生成 + 监听 + 每客户端控制/发送线程 + 浏览器界面
   client  PC 客户端：心跳 + 收图 + 断线重连
+  server\win、client\win        VS2022 工程与 Windows 编译产物
+  server\ubuntu、client\ubuntu  Linux Makefile 与编译产物
 
 二、构建
-  依赖：VS2022（x64）+ CMake ≥ 3.13 + G:\库\libevent\dev 开发包。
-  若开发包不在默认位置，用 -DLIBEVENT_DEV_DIR=路径 指定。
-    cmake -B build -A x64
-    cmake --build build --config Release
+  Windows：Visual Studio 2022（x64）+ G:\库\libevent\dev 开发包。
+    MSBuild server\win\server.sln /p:Configuration=Release /p:Platform=x64
+    MSBuild client\win\client.sln /p:Configuration=Release /p:Platform=x64
+  Ubuntu：见"四、Ubuntu 构建与运行"（cd 到对应 ubuntu 目录后 make）。
 
 三、运行
  server.exe            服务器（监听 9995，最多 10 客户端，Ctrl+C 退出）
@@ -76,7 +76,7 @@ client.exe IP 端口    指定服务器地址
 四、协议速览
   
 现在的控制码是两套通道：client ↔ server 走 TCP 协议码，浏览器 ↔ server 走 HTTP API。浏览器不直接发协议码，它操作 server 本地的图像源；client 才发协议码。
-1. 协议帧（common\protocol.h）
+1. 协议帧（server\common\protocol.h）
 固定 16 字节头 FrameHeader："CAM0"(4) + ctl控制码(4) + err错误码(4) + len数据长度(4)，本机小端直接 memcpy。
 "头+数据"合并成一次 bufferevent_write，保证一个包完整发出。
 2. 控制码表（Ctl，共 8 个）
@@ -108,7 +108,7 @@ PauseSource/ResumeSource → 直接调 ImageSource::pause()/resume()，全局冻
 一句话总结：协议码只管 client↔server 的心跳、收图开关、全局暂停/恢复；浏览器则直接改 server 本地图像源，两者共享同一份"暂停/恢复"状态。
 
 
-五、超时与重连参数（common\protocol.h 中可调）
+五、超时与重连参数（server\common\protocol.h 中可调）
   图像生成间隔 100ms（10 帧/秒）
   发送线程等 img_ready 超时 5 秒（超时发 err_code=1 的空头）
   客户端心跳间隔 3 秒；读超时 3 秒
@@ -158,9 +158,14 @@ GDI 预览：CreateDIBSection 拿到可直接写像素的内存，灰度展开�
 
 本附录针对重构后的代码编写（class 模式，C++11，每个类独立 .h/.cpp）。
 
-一、目录结构（G:\Share\libevent）
+一、目录结构（G:\Share\libevent，2026-08 整理：win=VS 工程与产物，ubuntu=Linux 构建与产物）
 --------------------------------------------------------------------------------
-server\                         服务器端（C++11，VS2022 工程 + Linux Makefile）
+server\                         服务器端源码（C++11）
+  common\                       server 共享模块（与 client\common 内容一致）
+    protocol.h                  协议定义：FrameHeader（16 字节 "CAM0" 头）、
+                                enum class 控制码/错误码、全部常量
+    logger.h / .cpp             Logger：分级日志（DEBUG/INFO/WARN/ERROR）+
+                                时间戳 + 线程安全，可整体调低/关闭输出级别
   main.cpp                      程序入口：创建 Server 对象并运行
   server.h / server.cpp       Server 组合根：监听 9995、Ctrl+C 信号处理、
                                 启动/停止 图像源、WebServer、ClientManager
@@ -168,7 +173,7 @@ server\                         服务器端（C++11，VS2022 工程 + Linux Mak
                                 默认 20ms/帧）+ 生产者/消费者模型（锁+条件变量）
   client_session.h / .cpp     ClientSession：每个客户端一个会话对象，内含
                                 控制线程（独立 event_base + bufferevent）与
-                                图像发送线程；断开后自行清理
+                                图像发送线程；断开后自行清理（含发送统计）
   client_manager.h / .cpp     ClientManager：会话管理表（最多 10 个），
                                 用 std::unique_ptr 持有会话对象，线程安全
   web_server.h / .cpp         WebServer：mongoose HTTP 服务（8080 端口），
@@ -176,32 +181,38 @@ server\                         服务器端（C++11，VS2022 工程 + Linux Mak
   png_encoder.h / .cpp        PngEncoder：自包含极简 PNG 编码器（8bit 灰度，
                                 zlib stored 块，无第三方依赖）
   mongoose.c / mongoose.h       Mongoose 7.22 单文件 HTTP 库（保持 C 编译）
-  index.html                    浏览器页面（按钮：开始/暂停/心跳/帧率/开关监控/
-                                显示尺寸）
-  server.sln / server.vcxproj   VS2022 工程（/std:c++14，mongoose.c 按 C 编译）
-  Makefile                      Linux 构建（g++ 编 C++，gcc 编 mongoose.c）
-  Release\server.exe            Windows 编译产物
+  index.html                    浏览器页面源码（构建时自动复制到产物目录）
 
-client\                         PC 客户端（C++11，VS2022 工程 + Linux Makefile）
+  win\                          Windows 工程与产物
+    server.sln / server.vcxproj VS2022 工程（/std:c++14，mongoose.c 按 C 编译）
+    Release\server.exe          Windows 编译产物（含 index.html、event dll）
+    make-clean_and_del_vs2.bat  VS 中间文件清理脚本
+  ubuntu\                       Linux 构建与产物
+    Makefile                    g++ 编 C++，gcc 编 mongoose.c
+    server                      编译出的服务器可执行文件
+    index.html                  make 时自动从 ../index.html 复制
+
+client\                         PC 客户端源码（C++11）
+  common\                       client 共享模块（protocol.h、logger.*，与 server\common 同步）
   main.cpp                      程序入口：解析命令行参数，创建 Client 并运行
   client.h / .cpp             Client：单线程 libevent 事件循环 + 连接状态机
                                 （DISCONNECTED → CONNECTING → IDLE →
                                 WAIT_HB / IMAGE）+ 键盘输入线程
   preview_window.h / .cpp     PreviewWindow：Win32 GDI 实时预览窗口
                                 （Linux 为空壳，仅存图模式）
-  client.sln / client.vcxproj   VS2022 工程
-  Makefile                      Linux 构建
-  Release\client.exe            Windows 编译产物
-
-common\                         两端共享模块
-  protocol.h                  协议定义：FrameHeader（16 字节 "CAM0" 头）、
-                                enum class 控制码/错误码、全部常量
-                                （端口/超时/图像尺寸/心跳间隔）
-  logger.h / .cpp             Logger：分级日志（DBG/INF/WRN/ERR）+ 时间戳 +
-                                线程安全，可整体调低/关闭输出级别
+  win\
+    client.sln / client.vcxproj VS2022 工程
+    Release\client.exe          Windows 编译产物
+    make-clean_and_del_vs2.bat  VS 中间文件清理脚本
+  ubuntu\
+    Makefile                    Linux 构建
+    client                      编译出的客户端可执行文件
 
 使用手册.txt                    本文档
-make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
+CLASSES.md                      类架构详细说明
+make-clean_and_del_vs2.bat      顶层通用清理脚本（可选）
+
+注意：common 在 server\ 与 client\ 各有一份，修改 protocol.h/logger 需同步两端。
 
 二、class 类划分（为什么这样拆）
 --------------------------------------------------------------------------------
@@ -222,18 +233,18 @@ make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
 --------------------------------------------------------------------------------
 依赖：Visual Studio 2022（x64）+ libevent 开发包
 （本机默认在 G:\库\libevent\dev，工程已配置 include/lib 路径；
- event.dll / event_core.dll / event_extra.dll 已随 Release 输出）。
+ event.dll / event_core.dll / event_extra.dll 已随 win\Release 输出）。
 
 构建：
-  1) 双击打开 server\server.sln，选 Release x64 → 生成；
-  2) 双击打开 client\client.sln，选 Release x64 → 生成。
-  （命令行：MSBuild server.sln /p:Configuration=Release /p:Platform=x64）
+  1) 双击打开 server\win\server.sln，选 Release x64 → 生成；
+  2) 双击打开 client\win\client.sln，选 Release x64 → 生成。
+  （命令行：MSBuild server\win\server.sln /p:Configuration=Release /p:Platform=x64）
 
-运行：
-  server\Release\server.exe                  # 服务器：监听 9995，Web 8080
-  client\Release\client.exe 127.0.0.1 9995   # 本机连接
-  client\Release\client.exe <服务器IP> 9995  # 远程连接
-  client\Release\client.exe <IP> 9995 -s     # 连接后自动开始收图（测试用）
+运行（在 win\Release 目录下执行，server 需要同目录的 index.html）：
+  server\win\Release\server.exe              # 服务器：监听 9995，Web 8080
+  client\win\Release\client.exe 127.0.0.1 9995   # 本机连接
+  client\win\Release\client.exe <服务器IP> 9995  # 远程连接
+  client\win\Release\client.exe <IP> 9995 -s     # 连接后自动开始收图（测试用）
 
 四、Ubuntu 构建与运行
 --------------------------------------------------------------------------------
@@ -241,13 +252,13 @@ make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
 若 apt 报 403/源失效：先换国内镜像源（清华/阿里）再 sudo apt update，
 并安装：sudo apt install g++ libevent-dev。
 
-  # 服务器（在共享目录中同步代码后，到 Ubuntu 上编译）
-  cd /mnt/hgfs/Share/libevent/server
-  make clean && make          # 生成 server（mongoose.c 用 gcc，其余用 g++）
+  # 服务器（在共享目录中同步代码后，到 Ubuntu 的 ubuntu 目录编译）
+  cd /mnt/hgfs/Share/libevent/server/ubuntu
+  make clean && make          # 生成 server（mongoose.c 用 gcc，其余用 g++），并复制 index.html
   ./server
 
   # 客户端
-  cd /mnt/hgfs/Share/libevent/client
+  cd /mnt/hgfs/Share/libevent/client/ubuntu
   make clean && make
   ./client 192.168.183.129 9995
 
@@ -275,7 +286,7 @@ make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
   h   手动心跳
   Ctrl+C  退出
 
-七、协议速览（common\protocol.h）
+七、协议速览（server\common\protocol.h）
 --------------------------------------------------------------------------------
 16 字节头：flag[4]="CAM0" + ctl_code(4) + err_code(4) + nDataLen(4)。
 控制码：1 心跳请求 / 2 心跳应答 / 3 请求图像 / 4 停止图像 / 5 图像数据 /
@@ -287,3 +298,65 @@ make-clean_and_del_vs2.bat      清理 VS 工程中间文件（可选）
 
 
 类架构详细说明见同目录 CLASSES.md（类清单 + 类图 + 逐类接口）。
+
+
+八、日志系统说明
+--------------------------------------------------------------------------------
+日志格式：[时间] [级别] [模块] 内容
+示例：
+  [14:03:22.045] [INFO ] [SRV ] 接受客户端 192.168.1.5:52341 (fd=9)，当前 1/10
+  [14:03:22.047] [DEBUG] [NET ] 客户端 9 心跳应答 (1837203844)
+
+（一）级别（默认 info，运行中可切换）：
+  DEBUG（调试） 最详细，调 bug 用。心跳应答、收到/发送图像帧、帧率统计、
+                图像等待超时、请求带载荷等高频细节。
+  INFO（信息）  常规运行事件。启动、客户端连接/断开（含已发帧数/字节统计）、
+                开始/停止收图、暂停/恢复、帧间隔变更、保存开关、
+                显示尺寸变更、日志级别切换、浏览器开始/暂停出图。
+  WARN（警告）  可恢复的异常。连接失败重连、意外控制码、非法协议头、
+                未知控制码、设备控制未实现、客户端已满拒绝、保存目录创建失败。
+  ERROR（错误） 严重错误。线程创建失败、监听端口失败、事件循环初始化失败、
+                WSAStartup 失败。
+  OFF（关闭）   关闭所有日志输出。
+
+（二）模块标签：
+  [SRV] 服务端主程序（启动/监听/退出/连接管理）
+  [NET] 网络会话（连接/心跳/图像传输/暂停恢复/发送统计）
+  [WEB] 浏览器 HTTP 界面
+  [IMG] 图像生成线程
+  [CLT] 客户端
+
+（三）切换级别（运行中即时生效，无需重启）：
+  浏览器：点"📋 日志级别"按钮，或按键盘 L。
+  客户端：按键盘 L（调试->信息->警告->错误->关闭，循环）。
+  命令行：curl -X POST http://<服务器IP>:8080/api/log -d debug
+          可用值：debug / info / warn / error / off
+  查询当前级别：curl http://<服务器IP>:8080/api/log
+
+按 L 键切日志级别的完整链路，分三层说：
+1. 按键是怎么"进到"程序的（client 端）
+程序里有一个键盘线程专门等你按键盘：getchar() 读到字符后，存进一个共享变量 keyAction_，再喊一声"有按键来了"（event_active）。
+主线程收到信号后执行 keyControlCb()，里面一个 switch 判断按的是哪个键：case 'l'：切换日志级别。
+
+浏览器端更简单：index.html 里按 L（或点按钮）→ 发一个 HTTP 请求 POST /api/log，body 写 next（下一个级别）。
+2. "切下一个级别"是怎么算的（核心一行）
+日志级别本身就是一个数字：调试=0 < 信息=1 < 警告=2 < 错误=3 < 关闭=4。
+按一次 L 就执行：int nxt = (当前级别数字 + 1) % 5;   // 0→1→2→3→4→0，循环
+Logger::instance().setLevel(nxt);
+
+% 5 保证到"关闭(4)"之后会绕回"调试(0)"，不会越界。
+浏览器端是 server 进程里同样的代码（handleLog 里也是 (cur+1)%5），它改的是 server 的日志；client 按 L 改的是 client 的日志，两边各管各的（各自有一个 Logger 单例）。
+3. Logger 怎么让级别"生效"（过滤逻辑）
+所有日志都走同一个单例 Logger::instance()，输出前先过滤：void Logger::log(LogLevel lv, ...) {
+    if (lv < level_) return;   // 级别不够高？直接扔掉，不打印
+    // 打印 [时间] [级别] 内容
+}
+
+平时用的 LOG_INFO("...")、LOG_DEBUG("...") 只是宏，展开后就是 Logger::instance().info(...)。
+所以切到"调试"后，LOG_DEBUG 的日志（心跳、收帧、帧率这些）开始出现；切回"信息"后，LOG_DEBUG 全被第一行过滤掉，立刻安静。
+
+
+
+（四）注意：
+  * 启动横幅（==== 排版）为固定界面，不受日志级别控制。
+  * 客户端日志级别切换提示始终可见（切到"关闭"也能看到）。

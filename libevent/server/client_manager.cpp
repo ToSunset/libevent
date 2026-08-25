@@ -1,7 +1,7 @@
 #include "client_manager.h"
 
-#include "../common/logger.h"
-#include "../common/protocol.h"
+#include "common/logger.h"
+#include "common/protocol.h"
 #include "client_session.h"
 
 namespace cam {

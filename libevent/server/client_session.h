@@ -12,7 +12,7 @@
 
 #include <event2/util.h>
 
-#include "../common/protocol.h"
+#include "common/protocol.h"
 
 struct bufferevent;
 struct event_base;
@@ -60,6 +60,8 @@ private:
     std::atomic<bool>     sendStop_{true};
     uint32_t              lastSeq_ = 0;
     std::vector<uint8_t>  sendBuf_;   /* 头+图像数据合并缓冲 */
+    uint64_t              sendCount_ = 0;   /* 已发送图像帧数 */
+    uint64_t              sendBytes_ = 0;   /* 已发送字节数（含协议头） */
 };
 
 }  /* namespace cam */
